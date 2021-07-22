@@ -1180,6 +1180,6 @@ if __name__ == '__main__':
     print(os.getcwd())
     sys.path += [os.path.realpath(os.path.join(os.getcwd(), '..'))]
     from tests import test_pytreez
-    # test_pytreez.test_standard()
+    test_pytreez.test_standard()
     for tree in test_pytreez.TREES:
         test_pytreez.testTranspose(tree)
