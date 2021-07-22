@@ -232,5 +232,17 @@ def testRoundtripWithFlattenUpTo(inputs):
     assert actual == inputs
 
 
+@pytest.mark.parametrize("tree", TREES)
+def testTranspose(tree):
+    outer_treedef = tree_util.tree_structure(tree)
+    if not outer_treedef.num_leaves:
+        #self.skipTest("Skipping empty tree")
+        return
+    inner_treedef = tree_util.tree_structure([1, 1, 1])
+    nested = tree_util.tree_map(lambda x: [x, x, x], tree)
+    actual = tree_util.tree_transpose(outer_treedef, inner_treedef, nested)
+    assert actual == [tree, tree, tree]
+
+
 if __name__ == '__main__':
     test_standard()

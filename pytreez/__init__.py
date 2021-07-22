@@ -9,8 +9,49 @@ import builtins as py
 import operator as op
 import collections
 import functools
+from functools import partial
+from copy import deepcopy
 
 T = typing.TypeVar("T")
+
+
+# https://stackoverflow.com/questions/1966591/hasnext-in-python-iterators
+class iter(object):
+    def __init__(self, it):
+        self.it = py.iter(it)
+        self._hasnext = None
+    def __iter__(self):
+        return self
+    def next(self):
+        if hasattr(self, '_thenext'):
+            value = self._thenext
+            delattr(self, '_thenext')
+            self._hasnext = None
+            return value
+        else:
+            try:
+                return py.next(self.it)
+            except StopIteration:
+                self._hasnext = False
+            else:
+                self._hasnext = True
+    def hasnext(self):
+        if self._hasnext is None:
+            try:
+                self._thenext = py.next(self.it)
+            except StopIteration:
+                self._hasnext = False
+            else:
+                self._hasnext = True
+        return self._hasnext
+
+
+def next(it: iter):
+    return it.next()
+
+
+def finished_iterating(x: iter):
+    return not x.hasnext()
 
 
 def not_equal(a, b) -> py.bool:
@@ -111,7 +152,7 @@ class PyTreeDef:
     A PyTree is a tree of Python values, where the interior nodes are tuples, lists,
     dictionaries, or user-defined containers, and the leaves are other objects."""
     def __init__(self):
-        self.traversal_ = []
+        self.traversal_: typing.List[PyTreeDef.Node] = []
 
     @dataclass
     class Node:
@@ -186,9 +227,10 @@ class PyTreeDef:
 
     def __str__(self) -> py.str:
         agenda = []
-        for node in self.traversal_:
-            node.str(agenda)
-        assert len(agenda) == 1, "PyTreeDef traversal did not yield a singleton."
+        if len(self.traversal_) > 0:
+            for node in self.traversal_:
+                node.str(agenda)
+            assert len(agenda) == 1, "PyTreeDef traversal did not yield a singleton."
         return str_cat("PyTreeDef(", agenda, ")")
 
     def __repr__(self) -> py.str:
@@ -219,6 +261,128 @@ class PyTreeDef:
         else:
             return PyTreeKind.kLeaf, registration
 
+    def flatten_into(self, handle: typing.Any, leaves: typing.List[typing.Any], leaf_predicate: typing.Callable):
+        #   Node node;
+        node = PyTreeDef.Node()
+        #   int start_num_nodes = traversal_.size();
+        start_num_nodes = len(self.traversal_)
+        #   int start_num_leaves = leaves.size();
+        start_num_leaves = len(leaves)
+        #   if (leaf_predicate && (*leaf_predicate)(handle).cast<bool>()) {
+        #     leaves.push_back(py::reinterpret_borrow<py::object>(handle));
+        if leaf_predicate is not None and leaf_predicate(handle):
+            leaves.append(handle)
+        #   } else {
+        else:
+            # node.kind = GetKind(handle, &node.custom);
+            node.kind, node.custom = self.get_kind(handle)
+            # auto recurse = [this, &leaf_predicate, &leaves](py::handle child) {
+            #   FlattenInto(child, leaves, leaf_predicate);
+            # };
+            def recurse(child):
+                self.flatten_into(child, leaves, leaf_predicate)
+            # switch (node.kind) {
+            #   case PyTreeKind::kNone:
+            if node.kind == PyTreeKind.kNone:
+                # // Nothing to do.
+                # break;
+                pass
+            #   case PyTreeKind::kTuple: {
+            elif node.kind == PyTreeKind.kTuple:
+                # node.arity = PyTuple_GET_SIZE(handle.ptr());
+                node.arity = len(handle)
+                # for (int i = 0; i < node.arity; ++i) {
+                #   recurse(PyTuple_GET_ITEM(handle.ptr(), i));
+                # }
+                for i in range(node.arity):
+                    recurse(handle[i])
+                # break;
+            #   }
+            #   case PyTreeKind::kList: {
+            elif node.kind == PyTreeKind.kList:
+                # node.arity = PyList_GET_SIZE(handle.ptr());
+                node.arity = len(handle)
+                # for (int i = 0; i < node.arity; ++i) {
+                #   recurse(PyList_GET_ITEM(handle.ptr(), i));
+                # }
+                for i in range(node.arity):
+                    recurse(handle[i])
+                # break;
+            #   }
+            #   case PyTreeKind::kDict: {
+            elif node.kind == PyTreeKind.kDict:
+                # py::dict dict = py::reinterpret_borrow<py::dict>(handle);
+                dict: typing.Dict = handle
+                # py::list keys =
+                #     py::reinterpret_steal<py::list>(PyDict_Keys(dict.ptr()));
+                # if (PyList_Sort(keys.ptr())) {
+                #   throw std::runtime_error("Dictionary key sort failed.");
+                # }
+                keys: typing.List = list(sorted(dict.keys()))
+                # for (py::handle key : keys) {
+                #   recurse(dict[key]);
+                # }
+                for key in keys:
+                    recurse(dict[key])
+                # node.arity = dict.size();
+                node.arity = len(dict)
+                # node.node_data = std::move(keys);
+                node.node_data = keys
+                # break;
+            #   }
+            #   case PyTreeKind::kCustom: {
+            elif node.kind == PyTreeKind.kCustom:
+                # py::tuple out = py::cast<py::tuple>(node.custom->to_iterable(handle));
+                out: typing.Tuple = node.custom.to_iterable(handle)
+                # if (out.size() != 2) {
+                #   throw std::runtime_error(
+                #       "PyTree custom to_iterable function should return a pair");
+                # }
+                if len(out) != 2:
+                    raise RuntimeError("PyTree custom to_iterable function should return a pair")
+                # node.node_data = out[1];
+                node.node_data = out[1]
+                # node.arity = 0;
+                node.arity = 0
+                # for (py::handle entry : py::cast<py::iterable>(out[0])) {
+                #   ++node.arity;
+                #   recurse(entry);
+                # }
+                for entry in out[0]:
+                    node.arity += 1
+                    recurse(entry)
+                # break;
+            #   }
+            #   case PyTreeKind::kNamedTuple: {
+            elif node.kind == PyTreeKind.kNamedTuple:
+                # py::tuple tuple = py::reinterpret_borrow<py::tuple>(handle);
+                tuple: typing.NamedTuple = handle
+                # node.arity = tuple.size();
+                node.arity = len(tuple)
+                # node.node_data = py::reinterpret_borrow<py::object>(tuple.get_type());
+                node.node_data = type(tuple)
+                # for (py::handle entry : tuple) {
+                #   recurse(entry);
+                # }
+                for entry in tuple:
+                    recurse(entry)
+                # break;
+            #   }
+            #   default:
+            else:
+                # DCHECK(node.kind == PyTreeKind::kLeaf);
+                assert node.kind == PyTreeKind.kLeaf
+                # leaves.push_back(py::reinterpret_borrow<py::object>(handle));
+                leaves.append(handle)
+            # }
+        #   }
+        #   node.num_nodes = traversal_.size() - start_num_nodes + 1;
+        node.num_nodes = len(self.traversal_) - start_num_nodes + 1
+        #   node.num_leaves = leaves.size() - start_num_leaves;
+        node.num_leaves = len(leaves) - start_num_leaves
+        #   traversal_.push_back(std::move(node));
+        self.traversal_.append(node)
+
     @classmethod
     def flatten(cls, x: typing.Any, leaf_predicate: typing.Callable = None) -> (typing.Iterable, PyTreeDef):
         """Flattens a Pytree into a list of leaves and a PyTreeDef.
@@ -229,51 +393,6 @@ class PyTreeDef:
         tree = cls()
         tree.flatten_into(x, leaves, leaf_predicate)
         return leaves, tree
-
-    def flatten_into(self, handle: typing.Any, leaves: typing.List[typing.Any], leaf_predicate: typing.Callable):
-        """Recursive helper used to implement Flatten()."""
-        node = self.Node()
-        start_num_nodes = len(self.traversal_)
-        start_num_leaves = len(leaves)
-        if leaf_predicate and leaf_predicate(handle):
-            leaves.append(handle)
-        else:
-            node.kind, node.custom = self.get_kind(handle)
-            def recurse(child):
-                self.flatten_into(child, leaves, leaf_predicate)
-            if node.kind == PyTreeKind.kNone:
-                # Nothing to do.
-                pass
-            elif node.kind == PyTreeKind.kTuple or node.kind == PyTreeKind.kList:
-                node.arity = len(handle)
-                for item in handle:
-                    recurse(item)
-            elif node.kind == PyTreeKind.kDict:
-                keys = list(sorted(handle.keys()))
-                for key in keys:
-                    recurse(handle[key])
-                node.arity = len(handle)
-                node.node_data = keys
-            elif node.kind == PyTreeKind.kCustom:
-                out = node.custom.to_iterable(handle)
-                if not isinstance(out, tuple) or len(out) != 2:
-                    raise RuntimeError("PyTree custom to_iterable function should return a pair")
-                node.node_data = out[1]
-                node.arity = 0
-                for entry in out[0]:
-                    node.arity += 1
-                    recurse(entry)
-            elif node.kind == PyTreeKind.kNamedTuple:
-                node.arity = len(handle)
-                node.node_data = type(handle)
-                for entry in handle:
-                    recurse(entry)
-            else:
-                assert node.kind == PyTreeKind.kLeaf
-                leaves.append(handle)
-        node.num_nodes = len(self.traversal_) - start_num_nodes + 1
-        node.num_leaves = len(leaves) - start_num_leaves
-        self.traversal_.append(node)
 
     @classmethod
     def all_leaves(cls, x: typing.Any) -> bool:
@@ -305,8 +424,10 @@ class PyTreeDef:
             #   throw std::invalid_argument(absl::StrFormat(
             #       "Tree structures did not match: %s vs %s", py::repr(xs), ToString()));
             # }
-            if length_hint(it) <= 0:
-                raise ValueError("Tree structures did not match: %s vs %s" % (repr(xs), str(self)))
+            if finished_iterating(it):
+                raise ValueError("Tree structures did not match: %s vs %s" % (
+                    py.repr(xs), py.str(self)
+                ))
             # const Node& node = *it;
             node = next(it)
             # py::object object = agenda.back();
@@ -329,6 +450,8 @@ class PyTreeDef:
             #
             #   case PyTreeKind::kNone:
             #     break;
+            elif node.kind == PyTreeKind.kNone:
+                pass
             #
             #   case PyTreeKind::kTuple: {
             elif node.kind == PyTreeKind.kTuple:
@@ -337,9 +460,9 @@ class PyTreeDef:
                 #       absl::StrFormat("Expected tuple, got %s.", py::repr(object)));
                 # }
                 if not isinstance(object, py.tuple):
-                    raise ValueError("Expected tuple, got %s." % repr(object))
+                    raise ValueError("Expected tuple, got %s." % py.repr(object))
                 # py::tuple tuple = py::reinterpret_borrow<py::tuple>(object);
-                tuple: py.tuple = py.tuple(object)
+                tuple: py.tuple = object
                 # if (tuple.size() != node.arity) {
                 #   throw std::invalid_argument(
                 #       absl::StrFormat("Tuple arity mismatch: %d != %d; tuple: %s.",
@@ -347,7 +470,7 @@ class PyTreeDef:
                 # }
                 if len(tuple) != node.arity:
                     raise ValueError("Tuple arity mismatch: %d != %d; tuple: %s." % (
-                        len(tuple), node.arity, repr(object)
+                        len(tuple), node.arity, py.repr(object)
                     ))
                 # for (py::handle entry : tuple) {
                 #   agenda.push_back(py::reinterpret_borrow<py::object>(entry));
@@ -364,9 +487,9 @@ class PyTreeDef:
                 #       absl::StrFormat("Expected list, got %s.", py::repr(object)));
                 # }
                 if  not isinstance(object, py.list):
-                    raise ValueError("Expected list, got %s." % repr(object))
+                    raise ValueError("Expected list, got %s." % py.repr(object))
                 # py::list list = py::reinterpret_borrow<py::list>(object);
-                list: typing.List = py.list(object)
+                list: typing.List = object
                 # if (list.size() != node.arity) {
                 #   throw std::invalid_argument(
                 #       absl::StrFormat("List arity mismatch: %d != %d; list: %s.",
@@ -391,15 +514,15 @@ class PyTreeDef:
                 #       absl::StrFormat("Expected dict, got %s.", py::repr(object)));
                 # }
                 if  not isinstance(object, py.dict):
-                    raise ValueError("Expected dict, got %s." % repr(object))
+                    raise ValueError("Expected dict, got %s." % py.repr(object))
                 # py::dict dict = py::reinterpret_borrow<py::dict>(object);
-                dict: typing.Dict = py.dict(object)
+                dict: typing.Dict = object
                 # py::list keys =
                 #     py::reinterpret_steal<py::list>(PyDict_Keys(dict.ptr()));
                 # if (PyList_Sort(keys.ptr())) {
                 #   throw std::runtime_error("Dictionary key sort failed.");
                 # }
-                keys = py.list(sorted(dict.keys()))
+                keys = py.list(py.sorted(dict.keys()))
                 # if (keys.not_equal(node.node_data)) {
                 #   throw std::invalid_argument(
                 #       absl::StrFormat("Dict key mismatch; expected keys: %s; dict: %s.",
@@ -424,11 +547,10 @@ class PyTreeDef:
                 #   throw std::invalid_argument(absl::StrFormat(
                 #       "Expected named tuple, got %s.", py::repr(object)));
                 # }
-                if not py.isinstance(object, py.tuple) or not py.hasattr(object, "_fields"):
+                if not isinstance(object, py.tuple) or not hasattr(object, "_fields"):
                     raise ValueError("Expected named tuple, got %s." % py.repr(object))
                 # py::tuple tuple = py::reinterpret_borrow<py::tuple>(object);
-                # tuple: typing.Tuple = py.tuple(object)
-                tuple: typing.Tuple = object
+                tuple: typing.NamedTuple = object
                 # if (tuple.size() != node.arity) {
                 #   throw std::invalid_argument(absl::StrFormat(
                 #       "Named tuple arity mismatch: %d != %d; tuple: %s.", tuple.size(),
@@ -469,7 +591,7 @@ class PyTreeDef:
                         py.repr(node.custom.type), py.repr(object)
                     ))
                 # py::tuple out = py::cast<py::tuple>(node.custom->to_iterable(object));
-                out: typing.Tuple = py.tuple(node.custom.to_iterable(object))
+                out: typing.Tuple = node.custom.to_iterable(object)
                 # if (out.size() != 2) {
                 #   throw std::runtime_error(
                 #       "PyTree custom to_iterable function should return a pair");
@@ -511,9 +633,9 @@ class PyTreeDef:
         #     throw std::invalid_argument(absl::StrFormat(
         #         "Tree structures did not match: %s vs %s", py::repr(xs), ToString()));
         #   }
-        if length_hint(it) != 0 or leaf != -1:
+        if not finished_iterating(it) or leaf != -1:
             raise ValueError("Tree structures did not match: %s vs %s" % (
-                py.repr(xs), str(self)
+                py.repr(xs), py.str(self)
             ))
         #   return leaves;
         return leaves
@@ -526,9 +648,7 @@ class PyTreeDef:
 
     @property
     def num_nodes(self) -> py.int:
-        if len(self.traversal_) <= 0:
-            return 0
-        return self.traversal_[-1].num_nodes
+        return len(self.traversal_)
 
     @staticmethod
     def tuple(defs: typing.Iterable[PyTreeDef]):
@@ -539,12 +659,11 @@ class PyTreeDef:
         #     absl::c_copy(def.traversal_, std::back_inserter(out->traversal_));
         #   }
         for def_ in defs:
-            for x in def_.traversal_:
-                out.traversal_.append(x)
+            out.traversal_.extend(deepcopy(def_.traversal_))
         #   Node node;
-        node = PyTreeDef.Node(kind=PyTreeKind.kTuple, arity=len(defs))
         #   node.kind = PyTreeKind::kTuple;
         #   node.arity = defs.size();
+        node = PyTreeDef.Node(kind=PyTreeKind.kTuple, arity=len(defs))
         #   out->traversal_.push_back(node);
         out.traversal_.append(node)
         #   return out;
@@ -577,8 +696,7 @@ class PyTreeDef:
             # std::copy(traversal_.begin() + pos - node.num_nodes,
             #           traversal_.begin() + pos,
             #           std::back_inserter(children[i]->traversal_));
-            for x in self.traversal_[pos-node.num_nodes:pos]:
-                children[i].traversal_.append(x)
+            children[i].traversal_.extend(deepcopy(self.traversal_[pos - node.num_nodes:pos]))
             # pos -= node.num_nodes;
             pos -= node.num_nodes
         #   }
@@ -610,7 +728,7 @@ class PyTreeDef:
                 #       "Too few leaves for PyTreeDef; expected %d, got %d", num_leaves(),
                 #       leaf_count));
                 # }
-                if length_hint(it) <= 0:
+                if finished_iterating(it):
                     raise ValueError("Too few leaves for PyTreeDef; expected %d, got %d" % (
                         self.num_leaves, leaf_count
                     ))
@@ -641,7 +759,7 @@ class PyTreeDef:
                 # }
                 span = []
                 if node.arity > 0:
-                    span = agenda[size - node.arity:]
+                    span = agenda[size - node.arity:size]
                 # py::object o = MakeNode(node, span);
                 o = self.make_node(node, span)
                 # agenda.resize(size - node.arity);
@@ -651,12 +769,14 @@ class PyTreeDef:
                 # break;
             #   }
             # }
+            else:
+                assert False, "Unreachable code."
         #   }
         #   if (it != leaves.end()) {
         #     throw std::invalid_argument(absl::StrFormat(
         #         "Too many leaves for PyTreeDef; expected %d.", num_leaves()));
         #   }
-        if length_hint(it) != 0:
+        if not finished_iterating(it):
             raise ValueError("Too many leaves for PyTreeDef; expected %d." % (
                 self.num_leaves
             ))
@@ -665,7 +785,7 @@ class PyTreeDef:
         #   }
         assert len(agenda) == 1, "PyTreeDef traversal did not yield a singleton."
         #   return std::move(agenda.back());
-        return agenda.pop()
+        return agenda[-1]
 
     @staticmethod
     def make_node(node: PyTreeDef.Node, children: typing.Iterable):
@@ -723,7 +843,7 @@ class PyTreeDef:
             #   py::dict dict;
             dict: typing.Dict = py.dict()
             #   py::list keys = py::reinterpret_borrow<py::list>(node.node_data);
-            keys = py.list(node.node_data)
+            keys = node.node_data
             #   for (int i = 0; i < node.arity; ++i) {
             #     dict[keys[i]] = std::move(children[i]);
             #   }
@@ -750,6 +870,38 @@ class PyTreeDef:
         #   throw std::logic_error("Unreachable code.");
         assert False, "Unreachable code."
 
+    def compose(self, inner: PyTreeDef) -> PyTreeDef:
+        """Composes two PyTreeDefs, replacing the leaves of this tree with copies of `inner`."""
+        #   auto out = absl::make_unique<PyTreeDef>();
+        out = PyTreeDef()
+        #   for (const Node& n : traversal_) {
+        for n in self.traversal_:
+            # if (n.kind == PyTreeKind::kLeaf) {
+            #   absl::c_copy(inner.traversal_, std::back_inserter(out->traversal_));
+            # } else {
+            #   out->traversal_.push_back(n);
+            # }
+            if n.kind == PyTreeKind.kLeaf:
+                out.traversal_.extend(deepcopy(inner.traversal_))
+            else:
+                out.traversal_.append(deepcopy(n))
+        #   }
+        #   const auto& root = traversal_.back();
+        root = self.traversal_[-1]
+        #   const auto& inner_root = inner.traversal_.back();
+        inner_root = inner.traversal_[-1]
+        #   // TODO(tomhennigan): This should update all nodes in the traversal.
+        #   auto& out_root = out->traversal_.back();
+        out_root = out.traversal_[-1]
+        #   out_root.num_nodes = (root.num_nodes - root.num_leaves) +
+        #                        (inner_root.num_nodes * root.num_leaves);
+        out_root.num_nodes = (root.num_nodes - root.num_leaves) + \
+                             (inner_root.num_nodes * root.num_leaves)
+        #   out_root.num_leaves *= inner_root.num_leaves;
+        out_root.num_leaves *= inner_root.num_leaves
+        #   return out;
+        return out
+
 
 def resize(l, i):
     if l is None:
@@ -762,6 +914,7 @@ def resize(l, i):
     elif n > i:
         for _ in range(n - i):
             l.pop()
+    assert len(l) == i
     return l
 
 
@@ -907,7 +1060,7 @@ def tree_map(f: typing.Callable, tree: typing.Any) -> PyTreeDef:
       `tree`.
     """
     leaves, treedef = tree_flatten(tree)
-    return treedef.unflatten(map(f, leaves))
+    return treedef.unflatten(py.list(map(f, leaves)))
 
 
 def tree_multimap(f: typing.Callable, tree: typing.Any, *rest: PyTreeDef) -> PyTreeDef:
@@ -935,18 +1088,31 @@ def build_tree(treedef: PyTreeDef, xs: typing.Any):
   return treedef.from_iterable_tree(xs)
 
 
-def tree_transpose(outer_treedef: PyTreeDef, inner_treedef: PyTreeDef, pytree_to_transpose: typing.Any):
+def tree_transpose_old(outer_treedef: PyTreeDef, inner_treedef: PyTreeDef, pytree_to_transpose: typing.Any):
     flat, treedef = tree_flatten(pytree_to_transpose)
     expected_treedef = outer_treedef.compose(inner_treedef)
     if treedef != expected_treedef:
         raise TypeError("Mismatch\n{}\n != \n{}".format(treedef, expected_treedef))
-
     inner_size = inner_treedef.num_leaves
     outer_size = outer_treedef.num_leaves
-    flat = iter(flat)
-    lol = [[next(flat) for _ in range(inner_size)] for __ in range(outer_size)]
-    transposed_lol = zip(*lol)
-    subtrees = map(partial(tree_unflatten, outer_treedef), transposed_lol)
+    flat_it = iter(flat)
+    lol = [[next(flat_it) for _ in range(inner_size)] for __ in range(outer_size)]
+    transposed_lol = py.list(zip(*lol))
+    subtrees = py.list(map(functools.partial(tree_unflatten, outer_treedef), transposed_lol))
+    return tree_unflatten(inner_treedef, subtrees)
+
+
+def tree_transpose(outer_treedef, inner_treedef, pytree_to_transpose):
+    flat, treedef = tree_flatten(pytree_to_transpose)
+    inner_size = inner_treedef.num_leaves
+    outer_size = outer_treedef.num_leaves
+    if treedef.num_leaves != (inner_size * outer_size):
+        expected_treedef = outer_treedef.compose(inner_treedef)
+        raise TypeError(f"Mismatch\n{treedef}\n != \n{expected_treedef}")
+    flat = py.iter(flat)
+    lol = [[py.next(flat) for _ in range(inner_size)] for __ in range(outer_size)]
+    transposed_lol = py.list(zip(*lol))
+    subtrees = py.list(map(partial(tree_unflatten, outer_treedef), transposed_lol))
     return tree_unflatten(inner_treedef, subtrees)
 
 
@@ -1014,4 +1180,6 @@ if __name__ == '__main__':
     print(os.getcwd())
     sys.path += [os.path.realpath(os.path.join(os.getcwd(), '..'))]
     from tests import test_pytreez
-    test_pytreez.test_standard()
+    # test_pytreez.test_standard()
+    for tree in test_pytreez.TREES:
+        test_pytreez.testTranspose(tree)
