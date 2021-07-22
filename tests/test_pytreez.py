@@ -146,8 +146,6 @@ LEAVES = (
 
 
 def test_basic():
-    print('')
-    print('----')
     assert tree_util.PyTreeTypeRegistry.lookup(list) is not None
     assert tree_util.PyTreeDef.get_kind([1,2,3])[0] == tree_util.PyTreeKind.kList
     assert tree_util.PyTreeDef.get_kind({'a': 1})[0] == tree_util.PyTreeKind.kDict
@@ -169,14 +167,11 @@ def test_custom_register():
             self.data = data
     tree_util.PyTreeTypeRegistry.register(Box, lambda self: (self.data, None), lambda meta, leaves: Box(leaves))
     leaves, td = tree_util.PyTreeDef.flatten({'box': Box([1,2,Box([3,4])])})
-    print(leaves)
-    print(td)
 
 
 def check(tree):
     leaves, td = tree_util.tree_flatten(tree)
     tree2 = td.unflatten(leaves)
-    print(tree2)
     assert tree_util.tree_leaves(tree) == tree_util.tree_leaves(tree2)
     assert tree == tree2
     return leaves, td
@@ -191,7 +186,6 @@ class Box:
         return (leaves, treedef)
     @classmethod
     def tree_unflatten(cls, treedef: tree_util.PyTreeDef, leaves):
-        print('tree_unflatten', leaves, treedef)
         data = treedef.unflatten(leaves)
         return cls(data)
     def __eq__(self, other: Box):
@@ -235,7 +229,6 @@ class parameterized:
         if len(choices) == 1 and isinstance(choices[0], list):
             choices = choices[0]
         def wrapper(fn):
-            print('OMGOMG', len(choices), choices)
             argc = [len(argv) for argv in choices]
             for i in range(len(argc) - 1):
                 a = argc[i]
@@ -246,18 +239,8 @@ class parameterized:
             if len(args) > 0 and args[0] == 'self':
                 args.pop(0)
             assert len(args) == argc
-            # argv = [choices]
-            # argvs = []
-            # for i in range(argc):
-            #     argvs.append(tuple(argv[i] for argv in choices))
             argvs = list(choices)
             argvs = [x[0] if isinstance(x, tuple) and len(x) == 1 else x for x in argvs]
-            # @wraps(fn)
-            # @pytest.mark.parametrize(','.join(args), argv)
-            # def wrapped(*args, **kws):
-            #     return fn(*args, **kws)
-            # return wrapped
-            print('TKTK', fn, ','.join(args), argvs)
             return pytest.mark.parametrize(','.join(args), argvs)(fn)
         return wrapper
 
