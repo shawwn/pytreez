@@ -976,9 +976,9 @@ def tree_reduce(function: typing.Callable[[T, typing.Any], T],
 def tree_all(tree: typing.Any):
     return py.all(tree_leaves(tree))
 
-def all_leaves(tree: typing.Any):
-    treedef = tree_structure(tree)
-    return all([treedef_is_leaf(x) for x in treedef.children()])
+
+def all_leaves(tree: typing.Iterable):
+    return PyTreeDef.all_leaves(tree)
 
 
 register_pytree_node(
