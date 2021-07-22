@@ -217,9 +217,7 @@ class PyTreeDef:
                     kind = "namedtuple"
                 else:
                     kind = str(node.custom.type)
-                data = ''
-                if node.node_data:
-                    data = '[%s]' % str(node.node_data)
+                data = '[%s]' % str(node.node_data)
                 representation.append('CustomNode(%s%s, [%s])' % (kind, data, children))
             for i in range(node.arity):
                 agenda.pop()
@@ -924,7 +922,7 @@ class PyTreeDef:
         iterable: typing.Iterable = xs
         #   std::vector<py::object> ys;
         #   ys.reserve(node.arity);
-        ys = resize(None, node.arity)
+        ys = []
         #   for (py::handle x : iterable) {
         #     ys.push_back(py::reinterpret_borrow<py::object>(x));
         #   }
@@ -1092,15 +1090,21 @@ def safe_zip(*args):
     return list(zip(*args))
 
 
-def tree_flatten(tree: typing.Any) -> (typing.Iterable, PyTreeDef):
+def tree_flatten(tree: typing.Any, is_leaf: Optional[Callable[[Any], bool]] = None) -> (typing.Iterable, PyTreeDef):
     """Flattens a pytree.
 
     Args:
       tree: a pytree to flatten.
+      is_leaf: an optionally specified function that will be called at each
+        flattening step. It should return a boolean, which indicates whether
+        the flattening should traverse the current object, or if it should be
+        stopped immediately, with the whole subtree being treated as a leaf.
+
     Returns:
-      a pair with a list of leaves and the corresponding treedef.
+      A pair where the first element is a list of leaf values and the second
+      element is a treedef representing the structure of the flattened tree.
     """
-    return PyTreeDef.flatten(tree)
+    return PyTreeDef.flatten(tree, is_leaf)
 
 
 def tree_unflatten(treedef: PyTreeDef, leaves: typing.Iterable):
@@ -1199,7 +1203,8 @@ def tree_map(f: typing.Callable, tree: typing.Any) -> PyTreeDef:
     return treedef.unflatten(py.list(map(f, leaves)))
 
 
-def tree_multimap(f: typing.Callable, tree: typing.Any, *rest: PyTreeDef) -> PyTreeDef:
+def tree_multimap(f: typing.Callable, tree: typing.Any, *rest: PyTreeDef,
+                  is_leaf: Optional[Callable[[Any], bool]] = None) -> typing.Any:
     """Maps a multi-input function over pytree args to produce a new pytree.
 
     Args:
@@ -1209,13 +1214,17 @@ def tree_multimap(f: typing.Callable, tree: typing.Any, *rest: PyTreeDef) -> PyT
         positional argument to `f`.
       *rest: a tuple of pytrees, each of which has the same structure as tree or
         or has tree as a prefix.
+      is_leaf: an optionally specified function that will be called at each
+        flattening step. It should return a boolean, which indicates whether
+        the flattening should traverse the current object, or if it should be
+        stopped immediately, with the whole subtree being treated as a leaf.
     Returns:
       A new pytree with the same structure as `tree` but with the value at each
       leaf given by `f(x, *xs)` where `x` is the value at the corresponding leaf
       in `tree` and `xs` is the tuple of values at corresponding nodes in
       `rest`.
     """
-    leaves, treedef = tree_flatten(tree)
+    leaves, treedef = tree_flatten(tree, is_leaf)
     all_leaves = [leaves] + [treedef.flatten_up_to(r) for r in rest]
     return treedef.unflatten(f(*xs) for xs in zip(*all_leaves))
 
@@ -1319,9 +1328,24 @@ register_pytree_node(
 
 if __name__ == '__main__':
     import sys, os
+    tree_util = sys.modules[__name__]
     print(os.getcwd())
     sys.path += [os.path.realpath(os.path.join(os.getcwd(), '..'))]
-    from tests import test_pytreez
-    test_pytreez.test_standard()
-    for tree in test_pytreez.TREES:
-        test_pytreez.testTranspose(tree)
+    from tests import test_pytreez as test_util
+    # test_pytreez.test_standard()
+    for tree in test_util.TREES:
+        test_util.testTranspose(tree)
+    case = test_util.TestCase()
+    for arg in (
+            (tree_util.Partial(test_util._dummy_func),),
+            (tree_util.Partial(test_util._dummy_func, 1, 2),),
+            (tree_util.Partial(test_util._dummy_func, x="a"),),
+            (tree_util.Partial(test_util._dummy_func, 1, 2, 3, x=4, y=5),),
+    ):
+        fn = case.testRoundtripPartial
+        fn = getattr(fn, '__wrapped', fn)
+        fn(*arg)
+    special = test_util.Special(2., 3.)
+    leaves, treedef = tree_util.tree_flatten(special)
+    foo = str(treedef)
+    print(foo)
