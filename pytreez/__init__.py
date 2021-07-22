@@ -902,6 +902,142 @@ class PyTreeDef:
         #   return out;
         return out
 
+    # py::object PyTreeDef::FromIterableTreeHelper(
+    #     py::handle xs,
+    #     absl::InlinedVector<PyTreeDef::Node, 1>::const_reverse_iterator* it) const {
+    def from_iterable_tree_helper(self, xs, it: iter):
+        """Recursive helper used to implement from_iterable_tree()"""
+        #   if (*it == traversal_.rend()) {
+        #     throw std::invalid_argument("Tree structures did not match.");
+        #   }
+        if finished_iterating(it):
+            raise ValueError("Tree structures did not match.")
+        #   const Node& node = **it;
+        #   ++*it;
+        node = next(it)
+        #   if (node.kind == PyTreeKind::kLeaf) {
+        #     return py::reinterpret_borrow<py::object>(xs);
+        #   }
+        if node.kind == PyTreeKind.kLeaf:
+            return xs
+        #   py::iterable iterable = py::reinterpret_borrow<py::iterable>(xs);
+        iterable: typing.Iterable = xs
+        #   std::vector<py::object> ys;
+        #   ys.reserve(node.arity);
+        ys = resize(None, node.arity)
+        #   for (py::handle x : iterable) {
+        #     ys.push_back(py::reinterpret_borrow<py::object>(x));
+        #   }
+        for x in iterable:
+            ys.append(x)
+        #   if (ys.size() != node.arity) {
+        #     throw std::invalid_argument("Arity mismatch between trees");
+        #   }
+        if len(ys) != node.arity:
+            raise ValueError("Arity mismatch between trees")
+        #   for (int j = node.arity - 1; j >= 0; --j) {
+        #     ys[j] = FromIterableTreeHelper(ys[j], it);
+        #   }
+        for j in range(node.arity - 1, -1, -1):
+            ys[j] = self.from_iterable_tree_helper(ys[j], it)
+        #
+        #   return MakeNode(node, absl::MakeSpan(ys));
+        return self.make_node(node, ys)
+        # }
+
+    #   pybind11::object Walk(const pybind11::function& f_node,
+    #                         pybind11::handle f_leaf,
+    #                         pybind11::iterable leaves) const;
+    def walk(self, f_node: typing.Callable, f_leaf: typing.Callable, leaves: typing.Iterable):
+        """Maps a function over a PyTree structure, applying f_leaf to each leaf, and
+        f_node to each container node.
+
+        TODO(phawkins): use flattening everywhere instead and delete this method."""
+        #   std::vector<py::object> agenda;
+        agenda = []
+        #   auto it = leaves.begin();
+        it = iter(leaves)
+        #   for (const Node& node : traversal_) {
+        for node in self.traversal_:
+            # switch (node.kind) {
+            #   case PyTreeKind::kLeaf: {
+            if node.kind == PyTreeKind.kLeaf:
+                # if (it == leaves.end()) {
+                #   throw std::invalid_argument("Too few leaves for PyTreeDef");
+                # }
+                if finished_iterating(it):
+                    raise ValueError("Too few leaves for PyTreeDef")
+                #
+                # py::object leaf = py::reinterpret_borrow<py::object>(*it);
+                leaf = next(it)
+                # agenda.push_back(f_leaf.is_none() ? std::move(leaf)
+                #                                   : f_leaf(std::move(leaf)));
+                agenda.append(f_leaf(leaf) if f_leaf is not None else leaf)
+                # ++it;
+                # break;
+            #   }
+            #
+            #   case PyTreeKind::kNone:
+            #   case PyTreeKind::kTuple:
+            #   case PyTreeKind::kNamedTuple:
+            #   case PyTreeKind::kList:
+            #   case PyTreeKind::kDict:
+            #   case PyTreeKind::kCustom: {
+            elif node.kind in [PyTreeKind.kNone,
+                               PyTreeKind.kTuple,
+                               PyTreeKind.kNamedTuple,
+                               PyTreeKind.kList,
+                               PyTreeKind.kDict,
+                               PyTreeKind.kCustom]:
+                # if (agenda.size() < node.arity) {
+                #   throw std::logic_error("Too few elements for custom type.");
+                # }
+                assert len(agenda) >= node.arity, "Too few elements for custom type."
+                # py::tuple tuple(node.arity);
+                tuple = resize(None, node.arity)
+                # for (int i = node.arity - 1; i >= 0; --i) {
+                #   tuple[i] = agenda.back();
+                #   agenda.pop_back();
+                # }
+                for i in range(node.arity - 1, -1, -1):
+                    tuple[i] = agenda.pop()
+                # agenda.push_back(f_node(tuple));
+                tuple = py.tuple(tuple)
+                agenda.append(f_node(tuple) if f_node is not None else tuple)
+            #   }
+            # }
+        #   }
+        #   if (it != leaves.end()) {
+        #     throw std::invalid_argument("Too many leaves for PyTreeDef");
+        #   }
+        if not finished_iterating(it):
+            raise ValueError("Too many leaves for PyTreeDef")
+        #   if (agenda.size() != 1) {
+        #     throw std::logic_error("PyTreeDef traversal did not yield a singleton.");
+        #   }
+        assert len(agenda) == 1, "PyTreeDef traversal did not yield a singleton."
+        #   return std::move(agenda.back());
+        return agenda[-1]
+
+    # py::object PyTreeDef::FromIterableTree(py::handle xs) const {
+    def from_iterable_tree(self, xs):
+        """Given a tree of iterables with the same node/leaf structure as this PyTree,
+        build the corresponding PyTree.
+
+        TODO(phawkins): use flattening everywhere instead and delete this method."""
+        #   auto it = traversal_.rbegin();
+        it = iter(self.traversal_[::-1])
+        #   py::object out = FromIterableTreeHelper(xs, &it);
+        out = self.from_iterable_tree_helper(xs, it)
+        #   if (it != traversal_.rend()) {
+        #     throw std::invalid_argument("Tree structures did not match.");
+        #   }
+        if not finished_iterating(it):
+            raise ValueError("Tree structures did not match.")
+        #   return out;
+        return out
+        # }
+
 
 def resize(l, i):
     if l is None:
@@ -1082,6 +1218,12 @@ def tree_multimap(f: typing.Callable, tree: typing.Any, *rest: PyTreeDef) -> PyT
     leaves, treedef = tree_flatten(tree)
     all_leaves = [leaves] + [treedef.flatten_up_to(r) for r in rest]
     return treedef.unflatten(f(*xs) for xs in zip(*all_leaves))
+
+
+# TODO(mattjj,phawkins): consider removing this function
+def _process_pytree(process_node: typing.Callable, tree: typing.Any):
+  leaves, treedef = tree_flatten(tree)
+  return treedef.walk(process_node, None, leaves), treedef
 
 
 def build_tree(treedef: PyTreeDef, xs: typing.Any):
