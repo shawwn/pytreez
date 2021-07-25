@@ -67,7 +67,7 @@ class PyTreeDef:
     def __init__(self, nodes = None):
         self.traversal_ = nodes if nodes is not None else []
 
-    def flatten_into(self, handle, leaves: T.List[T.Any], nodes: T.List[T.Any], leaf_predicate: T.Callable, start_num_nodes: int, start_num_leaves: int):
+    def flatten_into(self, handle, leaves: T.List[T.Any], nodes: T.List[T.Any], leaf_predicate: T.Callable, start_num_nodes: py.int, start_num_leaves: py.int):
         objtype = type(handle)
         node_data = None
         node_arity = -1
@@ -229,7 +229,7 @@ class PyTreeDef:
         return PyTreeDef(nodes)
 
     @classmethod
-    def flatten(cls, x: T.Any, leaf_predicate: T.Callable = None) -> (T.Iterable, PyTreeDef):
+    def flatten(cls, tree: T.Any, is_leaf: T.Optional[T.Callable[[T.Any], py.bool]] = None) -> (T.Iterable, PyTreeDef):
         """Flattens a Pytree into a list of leaves and a PyTreeDef.
 
         Returns references to the flattened objects, which might be temporary
@@ -239,6 +239,16 @@ class PyTreeDef:
         treedef = cls(nodes)
         treedef.flatten_into(tree, leaves, nodes, is_leaf, 0, 0)
         return leaves, treedef
+
+    @classmethod
+    def all_leaves(cls, iterable: T.Iterable) -> py.bool:
+        "Tests whether the given list is a flat list of leaves."
+        for handle in iterable:
+            objtype = type(handle)
+            reg = PyTreeTypeRegistry.lookup(objtype)
+            if reg is not None or is_namedtuple(handle, objtype) or objtype is _NoneType:
+                return False
+        return True
 
     def __str__(self):
         agenda = []
@@ -302,9 +312,10 @@ _module = type(collections)
 pytree = _module("pytree")
 pytree.flatten = PyTreeDef.flatten
 pytree.tuple = PyTreeDef.tuple
+pytree.all_leaves = PyTreeDef.all_leaves
 
 
-def tree_flatten(tree: T.Any, is_leaf: T.Optional[T.Callable[[T.Any], bool]] = None) -> (T.Iterable, PyTreeDef):
+def tree_flatten(tree: T.Any, is_leaf: T.Optional[T.Callable[[T.Any], py.bool]] = None) -> (T.Iterable, PyTreeDef):
     """Flattens a pytree.
 
     Args:
@@ -353,6 +364,25 @@ def treedef_children(treedef: PyTreeDef) -> T.List[PyTreeDef]:
 def treedef_is_leaf(treedef: PyTreeDef) -> py.bool:
     return treedef.num_nodes == 1
 
+def all_leaves(iterable: T.Iterable) -> py.bool:
+    """Tests whether all elements in the given iterable are all leaves.
+
+    >>> tree = {"a": [1, 2, 3]}
+    >>> assert all_leaves(jax.tree_leaves(tree))
+    >>> assert not all_leaves([tree])
+
+    This function is useful in advanced cases, for example if a library allows
+    arbitrary map operations on a flat list of leaves it may want to check if
+    the result is still a flat list of leaves.
+
+    Args:
+      iterable: Iterable of leaves.
+
+    Returns:
+      A boolean indicating if all elements in the input are leaves.
+    """
+    return pytree.all_leaves(iterable)
+
 def register_pytree_node(nodetype: T.Type, flatten_func: T.Callable, unflatten_func: T.Callable):
     """Extends the set of types that are considered internal nodes in pytrees.
 
@@ -371,7 +401,6 @@ def register_pytree_node(nodetype: T.Type, flatten_func: T.Callable, unflatten_f
     """
     PyTreeTypeRegistry.register(nodetype, flatten_func, unflatten_func)
     # _registry[nodetype] = _RegistryEntry(flatten_func, unflatten_func)
-
 
 def register_pytree_node_class(cls: T.Type):
     """Extends the set of types that are considered internal nodes in pytrees.
@@ -393,6 +422,33 @@ def register_pytree_node_class(cls: T.Type):
     register_pytree_node(cls, op.methodcaller('tree_flatten'), cls.tree_unflatten)
     return cls
 
+def tree_map(f: T.Callable[..., T.Any], tree: T.Any, *rest: T.Any,
+             is_leaf: T.Optional[T.Callable[[T.Any], py.bool]] = None) -> T.Any:
+    """Maps a multi-input function over pytree args to produce a new pytree.
+
+    Args:
+      f: function that takes ``1 + len(rest)`` arguments, to be applied at the
+        corresponding leaves of the pytrees.
+      tree: a pytree to be mapped over, with each leaf providing the first
+        positional argument to ``f``.
+      *rest: a tuple of pytrees, each of which has the same structure as tree or
+        or has tree as a prefix.
+      is_leaf: an optionally specified function that will be called at each
+        flattening step. It should return a boolean, which indicates whether
+        the flattening should traverse the current object, or if it should be
+        stopped immediately, with the whole subtree being treated as a leaf.
+
+    Returns:
+      A new pytree with the same structure as ``tree`` but with the value at each
+      leaf given by ``f(x, *xs)`` where ``x`` is the value at the corresponding
+      leaf in ``tree`` and ``xs`` is the tuple of values at corresponding nodes in
+      ``rest``.
+    """
+    leaves, treedef = tree_flatten(tree, is_leaf)
+    all_leaves = [leaves] + [treedef.flatten_up_to(r) for r in rest]
+    return treedef.unflatten(f(*xs) for xs in zip(*all_leaves))
+
+tree_multimap = tree_map
 
 def str_join(xs: T.Iterable, sep=', '):
     return sep.join([str(x) for x in xs])
