@@ -145,30 +145,6 @@ LEAVES = (
 )
 
 
-def test_basic():
-    assert tree_util.PyTreeTypeRegistry.lookup(list) is not None
-    assert tree_util.PyTreeDef.get_kind([1,2,3])[0] == tree_util.PyTreeKind.kList
-    assert tree_util.PyTreeDef.get_kind({'a': 1})[0] == tree_util.PyTreeKind.kDict
-    assert tree_util.PyTreeDef.get_kind((1,2,3))[0] == tree_util.PyTreeKind.kTuple
-    assert tree_util.PyTreeDef.get_kind(None)[0] == tree_util.PyTreeKind.kNone
-    assert tree_util.PyTreeDef.get_kind(1)[0] == tree_util.PyTreeKind.kLeaf
-    assert tree_util.PyTreeDef.get_kind(ATuple(42, 99))[0] == tree_util.PyTreeKind.kNamedTuple
-    assert tree_util.PyTreeDef.all_leaves([1,2,3])
-    assert not tree_util.PyTreeDef.all_leaves([1,2,[3]])
-    leaves, td = tree_util.PyTreeDef.flatten({'a': [1,2,3]})
-    leaves2, td2 = tree_util.PyTreeDef.flatten({'a': [1,2,3]})
-    assert td == td2
-    assert leaves == leaves2
-
-
-def test_custom_register():
-    class Box:
-        def __init__(self, data):
-            self.data = data
-    tree_util.PyTreeTypeRegistry.register(Box, lambda self: (self.data, None), lambda meta, leaves: Box(leaves))
-    leaves, td = tree_util.PyTreeDef.flatten({'box': Box([1,2,Box([3,4])])})
-
-
 def check(tree):
     leaves, td = tree_util.tree_flatten(tree)
     tree2 = td.unflatten(leaves)
