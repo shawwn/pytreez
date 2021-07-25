@@ -198,6 +198,21 @@ class PyTreeDef:
             ))
         return leaves
 
+    def children(self) -> typing.List[PyTreeDef]:
+        children = []
+        pos = len(self.traversal_) - 1
+        if pos >= 0:
+            (root_arity, *root) = self.traversal_[-1]
+            for i in range(root_arity - 1, -1, -1):
+                child = PyTreeDef()
+                (node_arity, num_leaves, num_nodes, objtype, node_data) = self.traversal_[pos - 1]
+                assert pos >= num_nodes, "children() walked off start of array"
+                child.traversal_.extend(self.traversal_[pos - num_nodes:pos])
+                children.append(child)
+                pos -= num_nodes
+            assert pos == 0, "pos != 0 at end of PyTreeDef::Children"
+        return children[::-1]
+
     def __str__(self):
         agenda = []
         for (node_arity, num_leaves, num_nodes, objtype, node_data) in self.traversal_:
