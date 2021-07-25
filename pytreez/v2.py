@@ -566,6 +566,36 @@ def tree_transpose(outer_treedef: PyTreeDef, inner_treedef: PyTreeDef, pytree_to
     return tree_unflatten(inner_treedef, subtrees)
 
 
+no_initializer = py.object()
+U = T.TypeVar("U")
+
+
+@T.overload
+def tree_reduce(function: T.Callable[[U, T.Any], U],
+                tree: T.Any) -> U:
+    ...
+
+
+@T.overload
+def tree_reduce(function: T.Callable[[U, T.Any], U],
+                tree: T.Any,
+                initializer: U) -> U:
+    ...
+
+
+def tree_reduce(function: T.Callable[[U, T.Any], U],
+                tree: T.Any,
+                initializer: T.Any = no_initializer) -> U:
+    if initializer is no_initializer:
+        return functools.reduce(function, tree_leaves(tree))
+    else:
+        return functools.reduce(function, tree_leaves(tree), initializer)
+
+
+def tree_all(tree):
+    return all(tree_leaves(tree))
+
+
 def is_namedtuple(obj, objtype):
     return hasattr(obj, '_fields') and isinstance(obj, tuple)
     # objtype.__bases__ and objtype.__bases__[0] is tuple
