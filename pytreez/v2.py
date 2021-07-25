@@ -10,8 +10,6 @@ import operator as op
 import collections
 import functools
 from functools import partial
-from copy import deepcopy
-from copy import copy
 
 _NoneType = type(None)
 
@@ -95,7 +93,7 @@ class PyTreeDef:
         return num_nodes, num_leaves
 
     def unflatten(self, leaves: T.List):
-        leaves = copy(leaves)
+        leaves = list(leaves)
         leaf_count = 0
         for (node_arity, num_leaves, num_nodes, objtype, node_data) in self.traversal_:
             if node_arity == -1:
@@ -114,6 +112,91 @@ class PyTreeDef:
                 leaves.insert(leaf_count, o)
                 leaf_count += 1
         return leaves[-1]
+
+    def flatten_up_to(self, xs: typing.Any):
+        """Flattens a Pytree up to this PyTreeDef. 'self' must be a tree prefix of
+        the tree-structure of 'xs'.
+
+        For example, if we flatten a value [(1, (2, 3)), {"foo": 4}] with a treedef
+        [(*, *), *], the result is the list of leaves [1, (2, 3), {"foo": 4}]."""
+        leaves = py.list(range(self.num_leaves))
+        agenda = [xs]
+        leaf = self.num_leaves - 1
+        for (node_arity, num_leaves, num_nodes, objtype, node_data) in self.traversal_[::-1]:
+            object = agenda.pop()
+            if objtype is _NoneType:
+                pass
+            elif node_arity == -1:
+                assert leaf >= 0, "Leaf count mismatch"
+                leaves[leaf] = object
+                leaf -= 1
+            elif objtype is py.tuple:
+                if not isinstance(object, py.tuple):
+                    raise ValueError("Expected tuple, got %s." % py.repr(object))
+                tuple: T.Tuple = object
+                if len(tuple) != node_arity:
+                    raise ValueError("Tuple arity mismatch: %d != %d; tuple: %s." % (
+                        len(tuple), node_arity, py.repr(object)
+                    ))
+                agenda.extend(tuple)
+            elif objtype is py.list:
+                if not isinstance(object, py.list):
+                    raise ValueError("Expected list, got %s." % py.repr(object))
+                list: T.List = object
+                if len(list) != node_arity:
+                    raise ValueError("List arity mismatch: %d != %d; list: %s." % (
+                        len(list), node_arity, py.repr(object)
+                    ))
+                agenda.extend(list)
+            elif objtype is py.dict:
+                if not isinstance(object, py.dict):
+                    raise ValueError("Expected dict, got %s." % py.repr(object))
+                dict: T.Dict = object
+                keys = py.list(dict.keys())
+                if keys != node_data:
+                    raise ValueError("Dict key mismatch; expected keys: %s; dict: %s." % (
+                        py.repr(node_data), py.repr(object)
+                    ))
+                agenda.extend(dict.values())
+            elif node_data == "namedtuple" and issubclass(objtype, py.tuple):
+                if not isinstance(object, py.tuple) or not hasattr(object, "_fields"):
+                    raise ValueError("Expected named tuple, got %s." % py.repr(object))
+                tuple: typing.NamedTuple = object
+                if len(tuple) != node_arity:
+                    raise ValueError("Named tuple arity mismatch: %d != %d; tuple: %s." % (
+                        len(tuple), node_arity, py.repr(object)
+                    ))
+                if py.type(tuple) != objtype:
+                    raise ValueError("Named tuple type mismatch: expected type: %s, tuple: %s." % (
+                        py.repr(objtype), py.repr(object)
+                    ))
+                agenda.extend(tuple)
+            else:
+                reg = PyTreeTypeRegistry.lookup(objtype)
+                if reg is None:
+                    raise ValueError("Custom node type mismatch: expected type: %s, value: %s." % (
+                        py.repr(objtype), py.repr(object)
+                    ))
+                out: T.Tuple = reg.to_iterable(object)
+                if len(out) != 2:
+                    raise RuntimeError("PyTree custom to_iterable function should return a pair")
+                if node_data != out[1]:
+                    raise ValueError("Mismatch custom node data: %s != %s; value: %s." % (
+                        py.repr(node_data), py.repr(out[1]), py.repr(object)
+                    ))
+                arity = len(out[0])
+                if arity != node_arity:
+                    raise ValueError("Custom type arity mismatch: %d != %d; value: %s." % (
+                        arity, node_arity, py.repr(object)
+                    ))
+                agenda.extend(out[0])
+            if len(agenda) <= 0:
+                break
+        if leaf != -1:
+            raise ValueError("Tree structures did not match: %s vs %s" % (
+                py.repr(xs), py.str(self)
+            ))
+        return leaves
 
     def __str__(self):
         agenda = []
@@ -155,6 +238,23 @@ class PyTreeDef:
 
     def __repr__(self) -> py.str:
         return str(self)
+
+    def __eq__(self, other: PyTreeDef):
+        if not isinstance(other, PyTreeDef):
+            return False
+        return self.traversal_ == other.traversal_
+
+    @property
+    def num_leaves(self) -> py.int:
+        if len(self.traversal_) <= 0:
+            return 0
+        (node_arity, num_leaves, num_nodes, objtype, node_data) = self.traversal_[-1]
+        return num_leaves
+
+    @property
+    def num_nodes(self) -> py.int:
+        return len(self.traversal_)
+
 
 
 def str_join(xs: T.Iterable, sep=', '):
