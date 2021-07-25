@@ -227,6 +227,18 @@ class PyTreeDef:
         nodes.append(node)
         return PyTreeDef(nodes)
 
+    @classmethod
+    def flatten(cls, x: T.Any, leaf_predicate: T.Callable = None) -> (T.Iterable, PyTreeDef):
+        """Flattens a Pytree into a list of leaves and a PyTreeDef.
+
+        Returns references to the flattened objects, which might be temporary
+        objects in the case of custom pytype handlers."""
+        leaves = []
+        nodes = []
+        treedef = cls(nodes)
+        treedef.flatten_into(tree, leaves, nodes, is_leaf, 0, 0)
+        return leaves, treedef
+
     def __str__(self):
         agenda = []
         for (node_arity, num_leaves, num_nodes, objtype, node_data) in self.traversal_:
@@ -285,19 +297,10 @@ class PyTreeDef:
         return len(self.traversal_)
 
 
-
-def str_join(xs: T.Iterable, sep=', '):
-    return sep.join([str(x) for x in xs])
-
-
-def str_cat(*xs: T.Optional[T.Iterable, py.str], sep=', ') -> py.str:
-    r = []
-    for x in xs:
-        if isinstance(x, str):
-            r.append(x)
-        else:
-            r.append(str_join(x, sep=sep))
-    return ''.join(r)
+_module = type(collections)
+pytree = _module("pytree")
+pytree.flatten = PyTreeDef.flatten
+pytree.tuple = PyTreeDef.tuple
 
 
 def tree_flatten(tree: T.Any, is_leaf: T.Optional[T.Callable[[T.Any], bool]] = None) -> (T.Iterable, PyTreeDef):
@@ -314,30 +317,40 @@ def tree_flatten(tree: T.Any, is_leaf: T.Optional[T.Callable[[T.Any], bool]] = N
       A pair where the first element is a list of leaf values and the second
       element is a treedef representing the structure of the flattened tree.
     """
-    leaves = []
-    nodes = []
-    pytree = PyTreeDef(nodes)
-    pytree.flatten_into(tree, leaves, nodes, is_leaf, 0, 0)
-    return leaves, pytree
-
+    return pytree.flatten(tree, is_leaf)
 
 def tree_unflatten(treedef: PyTreeDef, leaves: T.Iterable):
-  """Reconstructs a pytree from the treedef and the leaves.
+    """Reconstructs a pytree from the treedef and the leaves.
 
-  The inverse of `tree_flatten`.
+    The inverse of `tree_flatten`.
 
-  Args:
-    treedef: the treedef to reconstruct
-    leaves: the list of leaves to use for reconstruction. The list must
-      match the leaves of the treedef.
-  Returns:
-    The reconstructed pytree, containing the `leaves` placed in the
-    structure described by `treedef`.
-  """
-  if isinstance(treedef, list):
-      treedef = PyTreeDef(treedef)
-  return treedef.unflatten(leaves)
+    Args:
+      treedef: the treedef to reconstruct
+      leaves: the list of leaves to use for reconstruction. The list must
+        match the leaves of the treedef.
+    Returns:
+      The reconstructed pytree, containing the `leaves` placed in the
+      structure described by `treedef`.
+    """
+    return treedef.unflatten(leaves)
 
+def tree_leaves(tree) -> T.List:
+    """Gets the leaves of a pytree."""
+    return pytree.flatten(tree)[0]
+
+def tree_structure(tree) -> PyTreeDef:
+    """Gets the treedef for a pytree."""
+    return pytree.flatten(tree)[1]
+
+def treedef_tuple(treedefs: T.Iterable[PyTreeDef]) -> PyTreeDef:
+    """Makes a tuple treedef from a list of child treedefs."""
+    return pytree.tuple(list(treedefs))
+
+def treedef_children(treedef: PyTreeDef) -> T.List[PyTreeDef]:
+    return treedef.children()
+
+def treedef_is_leaf(treedef: PyTreeDef) -> py.bool:
+    return treedef.num_nodes == 1
 
 def register_pytree_node(nodetype: T.Type, flatten_func: T.Callable, unflatten_func: T.Callable):
     """Extends the set of types that are considered internal nodes in pytrees.
@@ -379,6 +392,18 @@ def register_pytree_node_class(cls: T.Type):
     register_pytree_node(cls, op.methodcaller('tree_flatten'), cls.tree_unflatten)
     return cls
 
+
+def str_join(xs: T.Iterable, sep=', '):
+    return sep.join([str(x) for x in xs])
+
+def str_cat(*xs: T.Optional[T.Iterable, py.str], sep=', ') -> py.str:
+    r = []
+    for x in xs:
+        if isinstance(x, str):
+            r.append(x)
+        else:
+            r.append(str_join(x, sep=sep))
+    return ''.join(r)
 
 def safe_zip(*args):
     n = len(args[0])
