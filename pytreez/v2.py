@@ -82,7 +82,7 @@ class PyTreeDef:
         else:
             reg = PyTreeTypeRegistry.lookup(objtype)
             if reg is not None or is_namedtuple(handle, objtype):
-                blades, node_data = reg.to_iterable(handle) if reg else (handle, objtype)
+                blades, node_data = reg.to_iterable(handle) if reg else (handle, "namedtuple")
                 node_arity = 0
                 for x in blades:
                     node_arity += 1
@@ -115,6 +115,60 @@ class PyTreeDef:
                 leaf_count += 1
         return leaves[-1]
 
+    def __str__(self):
+        agenda = []
+        for (node_arity, num_leaves, num_nodes, objtype, node_data) in self.traversal_:
+            assert len(agenda) >= max(node_arity, 0), "Too few elements for container."
+            representation = []
+            if node_arity < 0 and objtype is not _NoneType:
+                agenda.append("*")
+                continue
+            elif node_arity < 0 and objtype is _NoneType:
+                representation.append("None")
+            else:
+                children = '' if node_arity <= 0 else str_join(agenda[-node_arity:], ", ")
+                if objtype is py.tuple:
+                    # Tuples with only one element must have a trailing comma.
+                    if node_arity == 1:
+                        children += ","
+                    representation.append(str_cat("(", children, ")"))
+                elif objtype is py.list:
+                    representation.append(str_cat("[", children, "]"))
+                elif objtype is py.dict:
+                    separator = "{"
+                    keys = node_data
+                    values = agenda[-node_arity:]
+                    for key, value in safe_zip(keys, values):
+                        representation.append('%s%s: %s' % (separator, repr(key), value))
+                        separator = ", "
+                    representation.append('}')
+                else:
+                    kind = str(objtype)
+                    if node_data == "namedtuple" and issubclass(objtype, tuple):
+                        node_data, kind = kind, node_data
+                    data = '[%s]' % str(node_data)
+                    representation.append('CustomNode(%s%s, [%s])' % (kind, data, children))
+            if node_arity > 0:
+                del agenda[-node_arity:]
+            agenda.append(''.join(representation))
+        return str_cat("PyTreeDef(", agenda, ")")
+
+    def __repr__(self) -> py.str:
+        return str(self)
+
+
+def str_join(xs: T.Iterable, sep=', '):
+    return sep.join([str(x) for x in xs])
+
+
+def str_cat(*xs: T.Optional[T.Iterable, py.str], sep=', ') -> py.str:
+    r = []
+    for x in xs:
+        if isinstance(x, str):
+            r.append(x)
+        else:
+            r.append(str_join(x, sep=sep))
+    return ''.join(r)
 
 
 def tree_flatten(tree: T.Any, is_leaf: T.Optional[T.Callable[[T.Any], bool]] = None) -> (T.Iterable, PyTreeDef):
