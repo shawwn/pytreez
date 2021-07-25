@@ -125,6 +125,34 @@ class PyTreeDef:
         out.traversal_.append(node)
         return out
 
+    def walk(self, f_node: T.Callable, f_leaf: T.Callable, leaves: T.Iterable):
+        """Maps a function over a PyTree structure, applying f_leaf to each leaf, and
+        f_node to each container node.
+
+        TODO(phawkins): use flattening everywhere instead and delete this method."""
+        agenda = []
+        it = iter(leaves)
+        for node in self.traversal_:
+            (node_arity, num_leaves, num_nodes, objtype, node_data) = node
+            if node_arity == -1 and objtype is not _NoneType:
+                ok, leaf = next_value(it)
+                if not ok:
+                    raise ValueError("Too few leaves for PyTreeDef")
+                agenda.append(f_leaf(leaf) if f_leaf is not None else leaf)
+            else:
+                assert len(agenda) >= node_arity, "Too few elements for custom type."
+                tuple = []
+                if node_arity > 0:
+                    tuple = agenda[-node_arity:]
+                    del agenda[-node_arity:]
+                tuple = py.tuple(tuple)
+                agenda.append(f_node(tuple) if f_node is not None else tuple)
+        ok, _ = next_value(it)
+        if ok:
+            raise ValueError("Too many leaves for PyTreeDef")
+        assert len(agenda) == 1, "PyTreeDef traversal did not yield a singleton."
+        return agenda[-1]
+
     def flatten_up_to(self, xs: T.Any):
         """Flattens a Pytree up to this PyTreeDef. 'self' must be a tree prefix of
         the tree-structure of 'xs'.
@@ -497,6 +525,13 @@ def tree_transpose(outer_treedef: PyTreeDef, inner_treedef: PyTreeDef, pytree_to
 def is_namedtuple(obj, objtype):
     return hasattr(obj, '_fields') and isinstance(obj, tuple)
     # objtype.__bases__ and objtype.__bases__[0] is tuple
+
+
+def next_value(it):
+    try:
+        return True, next(it)
+    except StopIteration:
+        return False, None
 
 
 def str_join(xs: T.Iterable, sep=', '):
