@@ -370,7 +370,18 @@ class PyTreeDef:
     def __eq__(self, other: PyTreeDef):
         if not isinstance(other, PyTreeDef):
             return False
-        return self.traversal_ == other.traversal_
+        if len(self.traversal_) != len(other.traversal_):
+            return False
+        for a, b in zip(self.traversal_, other.traversal_):
+            (a_node_arity, a_num_leaves, a_num_nodes, a_objtype, a_node_data) = a
+            (b_node_arity, b_num_leaves, b_num_nodes, b_objtype, b_node_data) = b
+            if a_objtype != b_objtype or a_node_arity != b_node_arity:
+                return False
+            if (a_node_data is None) != (b_node_data is None):
+                return False
+            # We don't need to test equality of num_leaves and num_nodes since they
+            # are derivable from the other node data.
+        return True
 
     def __hash__(self):
         return py.hash(((node_arity, objtype) for (node_arity, num_leaves, num_nodes, objtype, node_data) in self.traversal_))
