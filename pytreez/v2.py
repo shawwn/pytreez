@@ -1,7 +1,4 @@
 from __future__ import annotations
-
-__version__ = '1.0.1'
-
 from dataclasses import dataclass
 import typing as T
 import builtins as py
