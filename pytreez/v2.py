@@ -125,7 +125,7 @@ class PyTreeDef:
         out.traversal_.append(node)
         return out
 
-    def walk(self, f_node: T.Callable, f_leaf: T.Callable, leaves: T.Iterable):
+    def walk(self, f_node: T.Optional[T.Callable], f_leaf: T.Optional[T.Callable], leaves: T.Iterable):
         """Maps a function over a PyTree structure, applying f_leaf to each leaf, and
         f_node to each container node.
 
@@ -152,6 +152,41 @@ class PyTreeDef:
             raise ValueError("Too many leaves for PyTreeDef")
         assert len(agenda) == 1, "PyTreeDef traversal did not yield a singleton."
         return agenda[-1]
+
+    def _from_iterable_tree_helper(self, tree: T.Any, it: T.Iterator):
+        """Recursive helper used to implement from_iterable_tree()"""
+        ok, node = next_value(it)
+        if not ok:
+            raise ValueError("Tree structures did not match.")
+        (node_arity, num_leaves, num_nodes, objtype, node_data) = node
+        if node_arity == -1:
+            if objtype is _NoneType:
+                return None
+            return tree
+        iterable: T.Iterable = tree
+        ys = py.list(iterable)
+        if len(ys) != node_arity:
+            raise ValueError("Arity mismatch between trees")
+        for j in range(node_arity - 1, -1, -1):
+            ys[j] = self._from_iterable_tree_helper(ys[j], it)
+        reg = PyTreeTypeRegistry.lookup(objtype)
+        if reg is not None:
+            o = reg.from_iterable(node_data, ys)
+        else:
+            o = objtype(*ys)
+        return o
+
+    def from_iterable_tree(self, tree: T.Iterable):
+        """Given a tree of iterables with the same node/leaf structure as this PyTree,
+        build the corresponding PyTree.
+
+        TODO(phawkins): use flattening everywhere instead and delete this method."""
+        it = iter(self.traversal_[::-1])
+        out = self._from_iterable_tree_helper(tree, it)
+        ok, _ = next_value(it)
+        if ok:
+            raise ValueError("Tree structures did not match.")
+        return out
 
     def flatten_up_to(self, xs: T.Any):
         """Flattens a Pytree up to this PyTreeDef. 'self' must be a tree prefix of
@@ -454,7 +489,6 @@ def register_pytree_node(nodetype: T.Type, flatten_func: T.Callable, unflatten_f
         `nodetype`.
     """
     pytree.register_node(nodetype, flatten_func, unflatten_func)
-    # _registry[nodetype] = _RegistryEntry(flatten_func, unflatten_func)
 
 
 def register_pytree_node_class(cls: T.Type):
@@ -506,6 +540,16 @@ def tree_map(f: T.Callable[..., T.Any], tree: T.Any, *rest: T.Any,
 
 
 tree_multimap = tree_map
+
+
+# TODO(mattjj,phawkins): consider removing this function
+def _process_pytree(process_node: T.Callable, tree: T.Any):
+    leaves, treedef = pytree.flatten(tree)
+    return treedef.walk(process_node, None, leaves), treedef
+
+
+def build_tree(treedef: PyTreeDef, xs: T.Any):
+    return treedef.from_iterable_tree(xs)
 
 
 def tree_transpose(outer_treedef: PyTreeDef, inner_treedef: PyTreeDef, pytree_to_transpose: T.Any):
