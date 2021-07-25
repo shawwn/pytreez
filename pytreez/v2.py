@@ -11,6 +11,7 @@ import collections
 import functools
 from functools import partial
 from copy import deepcopy
+from copy import copy
 
 _NoneType = type(None)
 
@@ -29,10 +30,10 @@ class PyTreeTypeRegistry:
         self.registrations_ = {}
         def add_builtin_type(type_obj, kind: PyTreeKind):
             self.registrations_[type_obj] = self.Registration(kind=kind, type=type_obj)
-        add_builtin_type(type(None), PyTreeKind.kNone)
-        add_builtin_type(tuple, PyTreeKind.kTuple)
-        add_builtin_type(list, PyTreeKind.kList)
-        add_builtin_type(dict, PyTreeKind.kDict)
+        # add_builtin_type(type(None), PyTreeKind.kNone)
+        # add_builtin_type(tuple, PyTreeKind.kTuple)
+        # add_builtin_type(list, PyTreeKind.kList)
+        # add_builtin_type(dict, PyTreeKind.kDict)
 
     @dataclass
     class Registration:
@@ -78,51 +79,37 @@ class PyTreeTypeRegistry:
         if type in self.registrations_:
             raise ValueError("Duplicate custom PyTreeDef type registration for %s." % repr(type))
         registration = cls.Registration(PyTreeKind.kCustom, type, to_iterable, from_iterable)
-        type._pytree_registration = registration
         self.registrations_[type] = registration
 
     @classmethod
-    def lookup(cls, type: T.Type):
-        try:
-            return type._pytree_registration
-        except AttributeError:
-            self = cls.singleton()
-            return self.registrations_.get(type)
+    def lookup(cls, type: T.Type) -> PyTreeTypeRegistry.Registration:
+        self = cls.singleton()
+        return self.registrations_.get(type)
 
 
-def is_namedtuple(obj):
-    return hasattr(obj, '_fields') and isinstance(obj, tuple)
+def is_namedtuple(obj, objtype):
+    return hasattr(obj, '_fields') and \
+            isinstance(obj, tuple)
+           # objtype.__bases__ and objtype.__bases__[0] is tuple
 
 
 class PyTreeDef:
-    def __init__(self):
-        self.traversal_ = []
-
-    def get_kind(self, obj, objtype):
-        registration = PyTreeTypeRegistry.lookup(objtype)
-        if registration is not None:
-            return registration.kind, registration
-        elif is_namedtuple(obj):
-            # We can only identify namedtuples heuristically, here by the presence of
-            # a _fields attribute.
-            return PyTreeKind.kNamedTuple, None
-        else:
-            return PyTreeKind.kLeaf, None
-
+    def __init__(self, nodes = None):
+        self.traversal_ = nodes if nodes is not None else []
 
     def flatten_into(self, handle, leaves: T.List[T.Any], nodes: T.List[T.Any], leaf_predicate: T.Callable, start_num_nodes: int, start_num_leaves: int):
-        # start_num_nodes = len(self.traversal_)
-        # start_num_leaves = len(leaves)
-        # assert leaf_predicate is None
-        # if leaf_predicate is not None and leaf_predicate(handle):
-        #     leaves.append(handle)
-        # else:
         objtype = type(handle)
         node_data = None
-        node_arity = 0
+        node_arity = -1
         num_nodes, num_leaves = start_num_nodes, start_num_leaves
         num_nodes += 1
-        if objtype in [py.tuple, py.list, py.dict] or is_namedtuple(handle):
+        if handle is None:
+            num_leaves += 1
+        elif objtype in [py.int, py.float, py.bool]:
+            leaves.append(handle)
+            num_leaves += 1
+        elif not (leaf_predicate is not None and leaf_predicate(handle)) \
+                and (objtype in [py.tuple, py.list, py.dict] or is_namedtuple(handle, objtype)):
             node_arity = len(handle)
             if objtype is py.dict:
                 node_data = list(sorted(handle.keys()))
@@ -130,32 +117,43 @@ class PyTreeDef:
                     x = handle[k]
                     num_nodes, num_leaves = self.flatten_into(x, leaves, nodes, leaf_predicate, num_nodes, num_leaves)
             else:
-                # node_data = handle
                 for x in handle:
                     num_nodes, num_leaves = self.flatten_into(x, leaves, nodes, leaf_predicate, num_nodes, num_leaves)
         else:
-            objtype = None
-            # node_data = handle
-            leaves.append(handle)
-            num_leaves += 1
+            reg = PyTreeTypeRegistry.lookup(objtype)
+            if reg is None:
+                leaves.append(handle)
+                num_leaves += 1
+            else:
+                blades, node_data = reg.to_iterable(handle)
+                node_arity = 0
+                for x in blades:
+                    node_arity += 1
+                    num_nodes, num_leaves = self.flatten_into(x, leaves, nodes, leaf_predicate, num_nodes, num_leaves)
         node = (node_arity, num_leaves - start_num_leaves, num_nodes - start_num_nodes, objtype, node_data)
         nodes.append(node)
         return num_nodes, num_leaves
 
     def unflatten(self, leaves: T.List):
+        leaves = copy(leaves)
         leaf_count = 0
         for (node_arity, num_leaves, num_nodes, objtype, node_data) in self.traversal_:
-            if objtype is None:
+            if node_arity == -1:
+                if objtype is _NoneType:
+                    leaves.insert(leaf_count, None)
                 leaf_count += num_leaves
             else:
                 span = leaves[leaf_count - node_arity:leaf_count]
-                # print(node_arity, objtype, span, node_data)
-                if objtype is py.dict:
-                    o = objtype(zip(node_data, span))
-                elif objtype in [py.tuple, py.list]:
+                if objtype in [py.tuple, py.list]:
                     o = objtype(span)
+                elif objtype is py.dict:
+                    o = objtype(safe_zip(node_data, span))
                 else:
-                    o = objtype(*span)
+                    reg = PyTreeTypeRegistry.lookup(objtype)
+                    if reg is None or reg.from_iterable is None:
+                        o = objtype(*span)
+                    else:
+                        o = reg.from_iterable(node_data, span)
                 del leaves[leaf_count - node_arity:leaf_count]
                 leaf_count -= node_arity
                 leaves.insert(leaf_count, o)
@@ -199,7 +197,64 @@ def tree_unflatten(treedef: PyTreeDef, leaves: T.Iterable):
     structure described by `treedef`.
   """
   if isinstance(treedef, list):
-      pytree = PyTreeDef()
-      pytree.traversal_ = treedef
-      treedef = pytree
+      treedef = PyTreeDef(treedef)
   return treedef.unflatten(leaves)
+
+
+def register_pytree_node(nodetype: T.Type, flatten_func: T.Callable, unflatten_func: T.Callable):
+    """Extends the set of types that are considered internal nodes in pytrees.
+
+    See `example usage <https://jax.readthedocs.io/en/latest/notebooks/JAX_pytrees.html#Pytrees-are-extensible>`_.
+
+    Args:
+      nodetype: a Python type to treat as an internal pytree node.
+      flatten_func: a function to be used during flattening, taking a value
+        of type `nodetype` and returning a pair, with (1) an iterable for
+        the children to be flattened recursively, and (2) some auxiliary data
+        to be stored in the treedef and to be passed to the `unflatten_func`.
+      unflatten_func: a function taking two arguments: the auxiliary data that
+        was returned by `flatten_func` and stored in the treedef, and the
+        unflattened children. The function should return an instance of
+        `nodetype`.
+    """
+    PyTreeTypeRegistry.register(nodetype, flatten_func, unflatten_func)
+    # _registry[nodetype] = _RegistryEntry(flatten_func, unflatten_func)
+
+
+def register_pytree_node_class(cls: T.Type):
+    """Extends the set of types that are considered internal nodes in pytrees.
+
+    This function is a thin wrapper around ``register_pytree_node``, and provides
+    a class-oriented interface:
+
+      @register_pytree_node_class
+      class Special:
+        def __init__(self, x, y):
+          self.x = x
+          self.y = y
+        def tree_flatten(self):
+          return ((self.x, self.y), None)
+        @classmethod
+        def tree_unflatten(cls, aux_data, children):
+          return cls(*children)
+    """
+    register_pytree_node(cls, op.methodcaller('tree_flatten'), cls.tree_unflatten)
+    return cls
+
+
+def safe_zip(*args):
+    n = len(args[0])
+    for arg in args[1:]:
+        assert len(arg) == n, 'length mismatch: {}'.format(list(map(len, args)))
+    return list(zip(*args))
+
+
+register_pytree_node(
+    collections.OrderedDict,
+    lambda x: (list(x.values()), list(x.keys())),
+    lambda keys, values: collections.OrderedDict(safe_zip(keys, values)))
+
+register_pytree_node(
+    collections.defaultdict,
+    lambda x: (tuple(x.values()), (x.default_factory, tuple(x.keys()))),
+    lambda s, values: collections.defaultdict(s[0], safe_zip(s[1], values)))
