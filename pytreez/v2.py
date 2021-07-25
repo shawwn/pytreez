@@ -67,6 +67,7 @@ class PyTreeDef:
             num_leaves -= 1
         elif objtype in [py.int, py.float, py.bool] \
                 or (leaf_predicate and leaf_predicate(handle)):
+            objtype = None
             leaves.append(handle)
         else:
             reg = PyTreeTypeRegistry.lookup(objtype)
@@ -78,6 +79,7 @@ class PyTreeDef:
                     num_nodes, num_leaves = cls.flatten_into(x, leaves, nodes, leaf_predicate, num_nodes, num_leaves)
                 num_leaves -= 1
             else:
+                objtype = None
                 leaves.append(handle)
         node = (node_arity, num_leaves - start_num_leaves, num_nodes - start_num_nodes, objtype, node_data)
         nodes.append(node)
