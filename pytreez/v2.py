@@ -2,7 +2,6 @@ from __future__ import annotations
 
 __version__ = '1.0.1'
 
-from enum import Enum
 from dataclasses import dataclass
 import typing as T
 import builtins as py
@@ -57,12 +56,6 @@ class PyTreeTypeRegistry:
         return self.registrations_.get(type)
 
 
-def is_namedtuple(obj, objtype):
-    return hasattr(obj, '_fields') and \
-           isinstance(obj, tuple)
-           # objtype.__bases__ and objtype.__bases__[0] is tuple
-
-
 class PyTreeDef:
     def __init__(self, nodes = None):
         self.traversal_ = nodes if nodes is not None else []
@@ -92,8 +85,8 @@ class PyTreeDef:
         nodes.append(node)
         return num_nodes, num_leaves
 
-    def unflatten(self, leaves: T.List):
-        leaves = list(leaves)
+    def unflatten(self, leaves: T.Iterable):
+        leaves: T.List = list(leaves)
         leaf_count = 0
         for (node_arity, num_leaves, num_nodes, objtype, node_data) in self.traversal_:
             if node_arity == -1:
@@ -123,9 +116,9 @@ class PyTreeDef:
                 out.traversal_.extend(inner.traversal_)
             else:
                 out.traversal_.append(node)
-        (_, root_num_leaves, root_num_nodes, _, _) = self.traversal_[-1]
-        (_, inner_root_num_leaves, inner_root_num_nodes, _, _) = inner.traversal_[-1]
-        (node_arity, num_leaves, num_nodes, objtype, node_data) = out.traversal_.pop()
+        _, root_num_leaves, root_num_nodes, _, _ = self.traversal_[-1]
+        _, inner_root_num_leaves, inner_root_num_nodes, _, _ = inner.traversal_[-1]
+        node_arity, num_leaves, num_nodes, objtype, node_data = out.traversal_.pop()
         num_nodes = (root_num_nodes - root_num_leaves) + (inner_root_num_nodes * root_num_leaves)
         num_leaves *= inner_root_num_leaves
         node = (node_arity, num_leaves, num_nodes, objtype, node_data)
@@ -337,6 +330,7 @@ pytree = _module("pytree")
 pytree.flatten = PyTreeDef.flatten
 pytree.tuple = PyTreeDef.tuple
 pytree.all_leaves = PyTreeDef.all_leaves
+pytree.register_node = PyTreeTypeRegistry.register
 
 
 def tree_flatten(tree: T.Any, is_leaf: T.Optional[T.Callable[[T.Any], py.bool]] = None) -> (T.Iterable, PyTreeDef):
@@ -355,6 +349,7 @@ def tree_flatten(tree: T.Any, is_leaf: T.Optional[T.Callable[[T.Any], py.bool]] 
     """
     return pytree.flatten(tree, is_leaf)
 
+
 def tree_unflatten(treedef: PyTreeDef, leaves: T.Iterable):
     """Reconstructs a pytree from the treedef and the leaves.
 
@@ -370,23 +365,29 @@ def tree_unflatten(treedef: PyTreeDef, leaves: T.Iterable):
     """
     return treedef.unflatten(leaves)
 
+
 def tree_leaves(tree) -> T.List:
     """Gets the leaves of a pytree."""
     return pytree.flatten(tree)[0]
+
 
 def tree_structure(tree) -> PyTreeDef:
     """Gets the treedef for a pytree."""
     return pytree.flatten(tree)[1]
 
+
 def treedef_tuple(treedefs: T.Iterable[PyTreeDef]) -> PyTreeDef:
     """Makes a tuple treedef from a list of child treedefs."""
     return pytree.tuple(list(treedefs))
 
+
 def treedef_children(treedef: PyTreeDef) -> T.List[PyTreeDef]:
     return treedef.children()
 
+
 def treedef_is_leaf(treedef: PyTreeDef) -> py.bool:
     return treedef.num_nodes == 1
+
 
 def all_leaves(iterable: T.Iterable) -> py.bool:
     """Tests whether all elements in the given iterable are all leaves.
@@ -407,6 +408,7 @@ def all_leaves(iterable: T.Iterable) -> py.bool:
     """
     return pytree.all_leaves(iterable)
 
+
 def register_pytree_node(nodetype: T.Type, flatten_func: T.Callable, unflatten_func: T.Callable):
     """Extends the set of types that are considered internal nodes in pytrees.
 
@@ -423,8 +425,9 @@ def register_pytree_node(nodetype: T.Type, flatten_func: T.Callable, unflatten_f
         unflattened children. The function should return an instance of
         `nodetype`.
     """
-    PyTreeTypeRegistry.register(nodetype, flatten_func, unflatten_func)
+    pytree.register_node(nodetype, flatten_func, unflatten_func)
     # _registry[nodetype] = _RegistryEntry(flatten_func, unflatten_func)
+
 
 def register_pytree_node_class(cls: T.Type):
     """Extends the set of types that are considered internal nodes in pytrees.
@@ -445,6 +448,7 @@ def register_pytree_node_class(cls: T.Type):
     """
     register_pytree_node(cls, op.methodcaller('tree_flatten'), cls.tree_unflatten)
     return cls
+
 
 def tree_map(f: T.Callable[..., T.Any], tree: T.Any, *rest: T.Any,
              is_leaf: T.Optional[T.Callable[[T.Any], py.bool]] = None) -> T.Any:
@@ -472,7 +476,9 @@ def tree_map(f: T.Callable[..., T.Any], tree: T.Any, *rest: T.Any,
     all_leaves = [leaves] + [treedef.flatten_up_to(r) for r in rest]
     return treedef.unflatten(f(*xs) for xs in zip(*all_leaves))
 
+
 tree_multimap = tree_map
+
 
 def tree_transpose(outer_treedef: PyTreeDef, inner_treedef: PyTreeDef, pytree_to_transpose: T.Any):
     flat, treedef = tree_flatten(pytree_to_transpose)
@@ -487,8 +493,15 @@ def tree_transpose(outer_treedef: PyTreeDef, inner_treedef: PyTreeDef, pytree_to
     subtrees = map(partial(tree_unflatten, outer_treedef), transposed_lol)
     return tree_unflatten(inner_treedef, subtrees)
 
+
+def is_namedtuple(obj, objtype):
+    return hasattr(obj, '_fields') and isinstance(obj, tuple)
+    # objtype.__bases__ and objtype.__bases__[0] is tuple
+
+
 def str_join(xs: T.Iterable, sep=', '):
     return sep.join([str(x) for x in xs])
+
 
 def str_cat(*xs: T.Optional[T.Iterable, py.str], sep=', ') -> py.str:
     r = []
@@ -498,6 +511,7 @@ def str_cat(*xs: T.Optional[T.Iterable, py.str], sep=', ') -> py.str:
         else:
             r.append(str_join(x, sep=sep))
     return ''.join(r)
+
 
 def safe_zip(*args):
     n = len(args[0])
@@ -517,11 +531,6 @@ register_pytree_node(
     lambda _, values: tuple(values))
 
 register_pytree_node(
-    collections.namedtuple,
-    lambda x: (x, type(x)),
-    lambda kind, values: kind(values))
-
-register_pytree_node(
     dict,
     lambda x: (list(x.values()), list(x.keys())),
     lambda keys, values: dict(safe_zip(keys, values)))
@@ -535,3 +544,19 @@ register_pytree_node(
     collections.defaultdict,
     lambda x: (tuple(x.values()), (x.default_factory, tuple(x.keys()))),
     lambda s, values: collections.defaultdict(s[0], safe_zip(s[1], values)))
+
+class Partial(functools.partial):
+    """A version of functools.partial that works in pytrees.
+
+    Use it for partial function evaluation in a way that is compatible with JAX's
+    transformations, e.g., ``Partial(func, *args, **kwargs)``.
+
+    (You need to explicitly opt-in to this behavior because we didn't want to give
+    functools.partial different semantics than normal function closures.)
+    """
+
+register_pytree_node(
+    Partial,
+    lambda partial_: ((partial_.args, partial_.keywords), partial_.func),
+    lambda func, xs: Partial(func, *xs[0], **xs[1]),
+)
