@@ -73,7 +73,7 @@ class PyTreeDef:
         node_arity = -1
         num_nodes, num_leaves = start_num_nodes + 1, start_num_leaves + 1
         if handle is None:
-            pass
+            num_leaves -= 1
         elif objtype in [py.int, py.float, py.bool] \
                 or (leaf_predicate and leaf_predicate(handle)):
             leaves.append(handle)
@@ -99,6 +99,7 @@ class PyTreeDef:
             if node_arity == -1:
                 if objtype is _NoneType:
                     leaves.insert(leaf_count, None)
+                    leaf_count += 1
                 leaf_count += num_leaves
             else:
                 span = leaves[leaf_count - node_arity:leaf_count]
