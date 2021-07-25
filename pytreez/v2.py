@@ -379,6 +379,8 @@ class PyTreeDef:
                 return False
             if (a_node_data is None) != (b_node_data is None):
                 return False
+            if a_node_data is not None and a_node_data != b_node_data:
+                return False
             # We don't need to test equality of num_leaves and num_nodes since they
             # are derivable from the other node data.
         return True
