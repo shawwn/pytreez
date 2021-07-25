@@ -57,7 +57,8 @@ class PyTreeDef:
     def __init__(self, nodes = None):
         self.traversal_ = nodes if nodes is not None else []
 
-    def flatten_into(self, handle, leaves: T.List[T.Any], nodes: T.List[T.Any], leaf_predicate: T.Callable, start_num_nodes: py.int, start_num_leaves: py.int):
+    @classmethod
+    def flatten_into(cls, handle, leaves: T.List[T.Any], nodes: T.List[T.Any], leaf_predicate: T.Callable, start_num_nodes: py.int, start_num_leaves: py.int):
         objtype = type(handle)
         node_data = None
         node_arity = -1
@@ -74,7 +75,7 @@ class PyTreeDef:
                 node_arity = 0
                 for x in blades:
                     node_arity += 1
-                    num_nodes, num_leaves = self.flatten_into(x, leaves, nodes, leaf_predicate, num_nodes, num_leaves)
+                    num_nodes, num_leaves = cls.flatten_into(x, leaves, nodes, leaf_predicate, num_nodes, num_leaves)
                 num_leaves -= 1
             else:
                 leaves.append(handle)
@@ -106,21 +107,21 @@ class PyTreeDef:
 
     def compose(self, inner: PyTreeDef) -> PyTreeDef:
         """Composes two PyTreeDefs, replacing the leaves of this tree with copies of `inner`."""
-        out = PyTreeDef()
+        out_nodes = []
         for node in self.traversal_:
             (node_arity, num_leaves, num_nodes, objtype, node_data) = node
             if node_arity == -1 and objtype is not _NoneType:
-                out.traversal_.extend(inner.traversal_)
+                out_nodes.extend(inner.traversal_)
             else:
-                out.traversal_.append(node)
+                out_nodes.append(node)
         _, root_num_leaves, root_num_nodes, _, _ = self.traversal_[-1]
         _, inner_root_num_leaves, inner_root_num_nodes, _, _ = inner.traversal_[-1]
-        node_arity, num_leaves, num_nodes, objtype, node_data = out.traversal_.pop()
+        node_arity, num_leaves, num_nodes, objtype, node_data = out_nodes.pop()
         num_nodes = (root_num_nodes - root_num_leaves) + (inner_root_num_nodes * root_num_leaves)
         num_leaves *= inner_root_num_leaves
         node = (node_arity, num_leaves, num_nodes, objtype, node_data)
-        out.traversal_.append(node)
-        return out
+        out_nodes.append(node)
+        return PyTreeDef(py.tuple(out_nodes))
 
     def walk(self, f_node: T.Optional[T.Callable], f_leaf: T.Optional[T.Callable], leaves: T.Iterable):
         """Maps a function over a PyTree structure, applying f_leaf to each leaf, and
@@ -276,17 +277,16 @@ class PyTreeDef:
         if pos >= 0:
             (root_arity, *root) = self.traversal_[-1]
             for i in range(root_arity - 1, -1, -1):
-                child = PyTreeDef()
                 (node_arity, num_leaves, num_nodes, objtype, node_data) = self.traversal_[pos - 1]
                 assert pos >= num_nodes, "children() walked off start of array"
-                child.traversal_.extend(self.traversal_[pos - num_nodes:pos])
+                child = PyTreeDef(py.tuple(self.traversal_[pos - num_nodes:pos]))
                 children.append(child)
                 pos -= num_nodes
             assert pos == 0, "pos != 0 at end of PyTreeDef::Children"
         return children[::-1]
 
     @staticmethod
-    def tuple(defs: T.List[PyTreeDef]):
+    def tuple(defs: T.List[PyTreeDef]) -> PyTreeDef:
         """Makes a Tuple PyTreeDef out of a vector of PyTreeDefs."""
         defs = py.list(defs)
         nodes = []
@@ -297,7 +297,7 @@ class PyTreeDef:
             num_nodes += td.num_nodes
         node = (node_arity, num_leaves, num_nodes, objtype, node_data)
         nodes.append(node)
-        return PyTreeDef(nodes)
+        return PyTreeDef(py.tuple(nodes))
 
     @classmethod
     def flatten(cls, tree: T.Any, is_leaf: T.Optional[T.Callable[[T.Any], py.bool]] = None) -> (T.Iterable, PyTreeDef):
@@ -307,9 +307,8 @@ class PyTreeDef:
         objects in the case of custom pytype handlers."""
         leaves = []
         nodes = []
-        treedef = cls(nodes)
-        treedef.flatten_into(tree, leaves, nodes, is_leaf, 0, 0)
-        return leaves, treedef
+        cls.flatten_into(tree, leaves, nodes, is_leaf, 0, 0)
+        return leaves, cls(py.tuple(nodes))
 
     @staticmethod
     def is_leaf(handle: T.Any) -> py.bool:
@@ -372,6 +371,9 @@ class PyTreeDef:
         if not isinstance(other, PyTreeDef):
             return False
         return self.traversal_ == other.traversal_
+
+    def __hash__(self):
+        return py.hash(((node_arity, objtype) for (node_arity, num_leaves, num_nodes, objtype, node_data) in self.traversal_))
 
     @property
     def num_leaves(self) -> py.int:

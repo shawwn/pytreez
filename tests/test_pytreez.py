@@ -239,6 +239,14 @@ class TestCase:
         assert a == False
 
     @staticmethod
+    def assertHashable(a):
+        try:
+            {a: True}
+        except TypeError:
+            assert False, "Not hashable"
+
+
+    @staticmethod
     def assertRegex(string, pattern, literal=False):
         if literal:
             pattern = re.escape(pattern)
@@ -258,6 +266,7 @@ class TestCase:
         xs, tree = tree_util.tree_flatten(inputs)
         actual = tree_util.tree_unflatten(tree, xs)
         self.assertEqual(actual, inputs)
+        self.assertHashable(tree)
 
     @parameterized.parameters(*(TREES + LEAVES))
     def testRoundtripWithFlattenUpTo(self, inputs):
