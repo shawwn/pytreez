@@ -113,7 +113,7 @@ class PyTreeDef:
                 leaf_count += 1
         return leaves[-1]
 
-    def flatten_up_to(self, xs: typing.Any):
+    def flatten_up_to(self, xs: T.Any):
         """Flattens a Pytree up to this PyTreeDef. 'self' must be a tree prefix of
         the tree-structure of 'xs'.
 
@@ -161,7 +161,7 @@ class PyTreeDef:
             elif node_data == "namedtuple" and issubclass(objtype, py.tuple):
                 if not isinstance(object, py.tuple) or not hasattr(object, "_fields"):
                     raise ValueError("Expected named tuple, got %s." % py.repr(object))
-                tuple: typing.NamedTuple = object
+                tuple: T.NamedTuple = object
                 if len(tuple) != node_arity:
                     raise ValueError("Named tuple arity mismatch: %d != %d; tuple: %s." % (
                         len(tuple), node_arity, py.repr(object)
@@ -198,7 +198,7 @@ class PyTreeDef:
             ))
         return leaves
 
-    def children(self) -> typing.List[PyTreeDef]:
+    def children(self) -> T.List[PyTreeDef]:
         children = []
         pos = len(self.traversal_) - 1
         if pos >= 0:
@@ -212,6 +212,20 @@ class PyTreeDef:
                 pos -= num_nodes
             assert pos == 0, "pos != 0 at end of PyTreeDef::Children"
         return children[::-1]
+
+    @staticmethod
+    def tuple(defs: T.List[PyTreeDef]):
+        """Makes a Tuple PyTreeDef out of a vector of PyTreeDefs."""
+        defs = py.list(defs)
+        nodes = []
+        node_arity, num_leaves, num_nodes, objtype, node_data = len(defs), 0, 0, py.tuple, None
+        for td in defs:
+            nodes.extend(td.traversal_)
+            num_leaves += td.num_leaves
+            num_nodes += td.num_nodes
+        node = (node_arity, num_leaves, num_nodes, objtype, node_data)
+        nodes.append(node)
+        return PyTreeDef(nodes)
 
     def __str__(self):
         agenda = []
