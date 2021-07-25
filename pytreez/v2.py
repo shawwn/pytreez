@@ -59,7 +59,7 @@ class PyTreeTypeRegistry:
 
 def is_namedtuple(obj, objtype):
     return hasattr(obj, '_fields') and \
-            isinstance(obj, tuple)
+           isinstance(obj, tuple)
            # objtype.__bases__ and objtype.__bases__[0] is tuple
 
 
@@ -113,6 +113,24 @@ class PyTreeDef:
                 leaves.insert(leaf_count, o)
                 leaf_count += 1
         return leaves[-1]
+
+    def compose(self, inner: PyTreeDef) -> PyTreeDef:
+        """Composes two PyTreeDefs, replacing the leaves of this tree with copies of `inner`."""
+        out = PyTreeDef()
+        for node in self.traversal_:
+            (node_arity, num_leaves, num_nodes, objtype, node_data) = node
+            if node_arity == -1 and objtype is not _NoneType:
+                out.traversal_.extend(inner.traversal_)
+            else:
+                out.traversal_.append(node)
+        (_, root_num_leaves, root_num_nodes, _, _) = self.traversal_[-1]
+        (_, inner_root_num_leaves, inner_root_num_nodes, _, _) = inner.traversal_[-1]
+        (node_arity, num_leaves, num_nodes, objtype, node_data) = out.traversal_.pop()
+        num_nodes = (root_num_nodes - root_num_leaves) + (inner_root_num_nodes * root_num_leaves)
+        num_leaves *= inner_root_num_leaves
+        node = (node_arity, num_leaves, num_nodes, objtype, node_data)
+        out.traversal_.append(node)
+        return out
 
     def flatten_up_to(self, xs: T.Any):
         """Flattens a Pytree up to this PyTreeDef. 'self' must be a tree prefix of
@@ -240,13 +258,19 @@ class PyTreeDef:
         treedef.flatten_into(tree, leaves, nodes, is_leaf, 0, 0)
         return leaves, treedef
 
+    @staticmethod
+    def is_leaf(handle: T.Any) -> py.bool:
+        objtype = type(handle)
+        reg = PyTreeTypeRegistry.lookup(objtype)
+        if reg is not None or is_namedtuple(handle, objtype) or objtype is _NoneType:
+            return False
+        return True
+
     @classmethod
     def all_leaves(cls, iterable: T.Iterable) -> py.bool:
         "Tests whether the given list is a flat list of leaves."
         for handle in iterable:
-            objtype = type(handle)
-            reg = PyTreeTypeRegistry.lookup(objtype)
-            if reg is not None or is_namedtuple(handle, objtype) or objtype is _NoneType:
+            if not cls.is_leaf(handle):
                 return False
         return True
 
@@ -449,6 +473,19 @@ def tree_map(f: T.Callable[..., T.Any], tree: T.Any, *rest: T.Any,
     return treedef.unflatten(f(*xs) for xs in zip(*all_leaves))
 
 tree_multimap = tree_map
+
+def tree_transpose(outer_treedef: PyTreeDef, inner_treedef: PyTreeDef, pytree_to_transpose: T.Any):
+    flat, treedef = tree_flatten(pytree_to_transpose)
+    inner_size = inner_treedef.num_leaves
+    outer_size = outer_treedef.num_leaves
+    if treedef.num_leaves != (inner_size * outer_size):
+        expected_treedef = outer_treedef.compose(inner_treedef)
+        raise TypeError(f"Mismatch\n{treedef}\n != \n{expected_treedef}")
+    flat = iter(flat)
+    lol = [[next(flat) for _ in range(inner_size)] for __ in range(outer_size)]
+    transposed_lol = zip(*lol)
+    subtrees = map(partial(tree_unflatten, outer_treedef), transposed_lol)
+    return tree_unflatten(inner_treedef, subtrees)
 
 def str_join(xs: T.Iterable, sep=', '):
     return sep.join([str(x) for x in xs])
