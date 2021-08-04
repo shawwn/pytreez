@@ -1,4 +1,5 @@
 __version__ = '1.3.2'
+from . import v2 as lib
 from .v2 import (
   Partial,
   all_leaves,
