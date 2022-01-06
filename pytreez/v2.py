@@ -71,8 +71,8 @@ class PyTreeDef:
             leaves.append(handle)
         else:
             reg = PyTreeTypeRegistry.lookup(objtype)
-            if reg is not None or is_namedtuple(handle, objtype):
-                blades, node_data = reg.to_iterable(handle) if reg else (handle, "namedtuple")
+            if reg is not None or is_namedtuple(handle, objtype) or is_dataclass_instance(handle):
+                blades, node_data = reg.to_iterable(handle) if reg else (handle, "namedtuple") if is_namedtuple(handle, objtype) else (dataclass_values(handle), "dataclass")
                 node_arity = 0
                 for x in blades:
                     node_arity += 1
@@ -85,10 +85,21 @@ class PyTreeDef:
         nodes.append(node)
         return num_nodes, num_leaves
 
-    def unflatten(self, leaves: T.Iterable):
+    @classmethod
+    def from_values(cls, values: T.Iterable, objtype, node_data=None):
+        reg = PyTreeTypeRegistry.lookup(objtype)
+        if reg is not None:
+            o = reg.from_iterable(node_data, values)
+        else:
+            o = objtype(*values)
+        return o
+
+
+    @classmethod
+    def unwrap(cls, leaves: T.Iterable, traversal):
         leaves: T.List = list(leaves)
         leaf_count = 0
-        for (node_arity, num_leaves, num_nodes, objtype, node_data) in self.traversal_:
+        for (node_arity, num_leaves, num_nodes, objtype, node_data) in traversal:
             if node_arity == -1:
                 if objtype is _NoneType:
                     leaves.insert(leaf_count, None)
@@ -96,16 +107,44 @@ class PyTreeDef:
                 leaf_count += num_leaves
             else:
                 span = leaves[leaf_count - node_arity:leaf_count]
-                reg = PyTreeTypeRegistry.lookup(objtype)
-                if reg is not None:
-                    o = reg.from_iterable(node_data, span)
-                else:
-                    o = objtype(*span)
+                o = cls.from_values(span, objtype, node_data)
                 del leaves[leaf_count - node_arity:leaf_count]
                 leaf_count -= node_arity
                 leaves.insert(leaf_count, o)
                 leaf_count += 1
-        return leaves[-1]
+        return leaves
+
+    def objtype(self):
+        (node_arity, num_leaves, num_nodes, objtype, node_data) = self.traversal_[-1]
+        return objtype
+
+    def node_data(self):
+        (node_arity, num_leaves, num_nodes, objtype, node_data) = self.traversal_[-1]
+        return node_data
+
+    def new(self, *values):
+        return self.from_values(values, self.objtype(), self.node_data())
+
+    def unflatten(self, leaves: T.Iterable):
+        return self.unwrap(leaves, self.traversal_)[-1]
+
+    def values(self, leaves: T.Iterable):
+        return self.unwrap(leaves, self.traversal_[:-1])
+
+    def keys(self):
+        (node_arity, num_leaves, num_nodes, objtype, node_data) = self.traversal_[-1]
+        if node_data == 'dataclass':
+            return list(dataclass_props(objtype).keys())
+        elif node_data == 'namedtuple':
+            return list(objtype._fields)
+        elif objtype is py.dict:
+            return node_data
+        else:
+            assert node_arity > 0
+            return list(range(node_arity))
+
+    def items(self, leaves: T.Iterable):
+        return list(zip(self.keys(), self.values(leaves)))
 
     def compose(self, inner: PyTreeDef) -> PyTreeDef:
         """Composes two PyTreeDefs, replacing the leaves of this tree with copies of `inner`."""
@@ -246,6 +285,17 @@ class PyTreeDef:
                         py.repr(objtype), py.repr(object)
                     ))
                 agenda.extend(tuple)
+            elif node_data == "dataclass" and is_dataclass_type(objtype):
+                args: list = object
+                if len(args) != node_arity:
+                    raise ValueError("Dataclass arity mismatch: %d != %d; args: %s." % (
+                        len(args), node_arity, py.repr(object)
+                    ))
+                # if py.type(tuple) != objtype:
+                #     raise ValueError("Named tuple type mismatch: expected type: %s, tuple: %s." % (
+                #         py.repr(objtype), py.repr(object)
+                #     ))
+                agenda.extend(args)
             else:
                 reg = PyTreeTypeRegistry.lookup(objtype)
                 if reg is None:
@@ -316,7 +366,7 @@ class PyTreeDef:
     def is_leaf(handle: T.Any) -> py.bool:
         objtype = type(handle)
         reg = PyTreeTypeRegistry.lookup(objtype)
-        if reg is not None or is_namedtuple(handle, objtype) or objtype is _NoneType:
+        if reg is not None or is_namedtuple(handle, objtype) or objtype is _NoneType or is_dataclass_instance(handle):
             return False
         return True
 
@@ -613,6 +663,22 @@ def tree_all(tree):
 def is_namedtuple(obj, objtype):
     return hasattr(obj, '_fields') and isinstance(obj, tuple)
     # objtype.__bases__ and objtype.__bases__[0] is tuple
+
+
+def is_dataclass_type(obj):
+    return hasattr(obj, '__dataclass_fields__') and isinstance(obj, type)
+
+
+def is_dataclass_instance(obj):
+    return hasattr(obj, '__dataclass_fields__') and not isinstance(obj, type)
+
+
+def dataclass_props(obj):
+    return {field.name: getattr(obj, field.name) for field in obj.__dataclass_fields__.values()}
+
+
+def dataclass_values(obj):
+    return list(dataclass_props(obj).values())
 
 
 def next_value(it):
